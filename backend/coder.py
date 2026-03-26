@@ -27,6 +27,7 @@ async def run_coder(code_policy_text, queue, version, version_mgr, cfg, client, 
         if item is None:
             if stop_event.is_set():
                 break
+            await asyncio.sleep(3)
             # Auto-exit if Ph1 is done and queue is fully drained
             current_meta = await asyncio.to_thread(version_mgr.get_meta, version)
             counts = await asyncio.to_thread(queue.counts)
@@ -34,7 +35,6 @@ async def run_coder(code_policy_text, queue, version, version_mgr, cfg, client, 
             queue_empty = counts["pending"] == 0 and counts["processing"] == 0
             if ph1_done and queue_empty:
                 break
-            await asyncio.sleep(1.5)
             continue
 
         try:
