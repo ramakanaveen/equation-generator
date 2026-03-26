@@ -8,6 +8,7 @@ export default function CodePanel({ version, activeMeta }) {
 
   const isDone = activeMeta?.status === 'done'
   const isGenerating = activeMeta?.status === 'generating' || activeMeta?.status === 'coding'
+  const canDownload = files.length > 0
 
   useEffect(() => {
     if (!version) return
@@ -52,29 +53,30 @@ export default function CodePanel({ version, activeMeta }) {
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '8px 10px', borderRadius: 6,
         background: isDone ? '#052e16' : '#111827',
-        border: `1px solid ${isDone ? '#16a34a' : '#1f2937'}`,
+        border: `1px solid ${isDone ? '#16a34a' : isGenerating ? '#b45309' : '#1f2937'}`,
       }}>
         <div style={{ fontSize: 12 }}>
           {isDone
             ? <span style={{ color: '#4ade80' }}>✓ Coding complete — {activeMeta.java_file_count} files</span>
-            : <span style={{ color: '#6b7280' }}>
-                {isGenerating ? `Generating… (${activeMeta?.java_file_count ?? 0} files so far)` : 'No status'}
-              </span>
+            : isGenerating
+              ? <span style={{ color: '#fbbf24' }}>Coding in progress — {activeMeta?.java_file_count ?? files.length} files so far</span>
+              : <span style={{ color: '#9ca3af' }}>{files.length} file{files.length !== 1 ? 's' : ''} (interrupted)</span>
           }
         </div>
         <button
           onClick={downloadProject}
-          disabled={!isDone}
+          disabled={!canDownload}
+          title={!isDone && canDownload ? 'Run may be incomplete — downloading available files' : ''}
           style={{
             padding: '5px 12px', fontSize: 12, borderRadius: 4,
-            background: isDone ? '#16a34a' : '#1f2937',
-            color: isDone ? '#fff' : '#4b5563',
+            background: canDownload ? (isDone ? '#16a34a' : '#854d0e') : '#1f2937',
+            color: canDownload ? '#fff' : '#4b5563',
             border: 'none',
-            cursor: isDone ? 'pointer' : 'not-allowed',
-            opacity: isDone ? 1 : 0.5,
+            cursor: canDownload ? 'pointer' : 'not-allowed',
+            opacity: canDownload ? 1 : 0.5,
           }}
         >
-          Download Project ZIP
+          {isDone ? 'Download Project ZIP' : canDownload ? 'Download (partial)' : 'Download Project ZIP'}
         </button>
       </div>
 
