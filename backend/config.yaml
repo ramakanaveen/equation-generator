@@ -1,0 +1,23 @@
+provider: anthropic
+
+port: 8000                # override with EQ_GEN_PORT env var
+
+vertex:
+  project_id: ""
+  region: us-east5
+  base_url: ""
+
+model:
+  name: claude-sonnet-4-20250514
+  vertex_name: claude-sonnet-4@20250514
+  max_tokens: 16384
+
+generation:
+  target_count: 20        # 0 = unlimited until Stop
+  eq_batch_size: 5        # equations per Ph1 API call
+  code_batch_size: 2      # equations per Ph2 API call
+  max_continuations: 3    # retries on max_tokens
+
+# Comma-separated origins can also be set via EQ_GEN_CORS_ORIGINS env var
+cors_origins:
+  - "*"

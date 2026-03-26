@@ -1,0 +1,38 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #0f0f0f;
+  color: #e0e0e0;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#root { height: 100vh; display: flex; flex-direction: column; }
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+}
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-primary  { background: #2563eb; color: #fff; }
+.btn-danger   { background: #dc2626; color: #fff; }
+.btn-secondary{ background: #374151; color: #e0e0e0; }
+.btn-ghost    { background: transparent; border: 1px solid #374151; color: #9ca3af; }
+
+.badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-pending    { background: #1d4ed8; color: #bfdbfe; }
+.badge-processing { background: #b45309; color: #fde68a; }
+.badge-done       { background: #065f46; color: #a7f3d0; }
+.badge-failed     { background: #7f1d1d; color: #fca5a5; }
