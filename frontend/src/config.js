@@ -18,4 +18,5 @@ export const API = {
   javaArchives:     (v)    =>   `${BASE}/api/versions/${v}/java-archives`,
   deleteVersion:(v)   =>   `${BASE}/api/versions/${v}`,
   policy:      (n)    =>   `${BASE}/api/policy/${n}`,
+  improvePolicy: (n)  =>   `${BASE}/api/policy/${n}/improve`,
 }

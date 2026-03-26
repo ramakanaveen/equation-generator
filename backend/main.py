@@ -16,7 +16,7 @@ from config import cfg
 from providers import AnthropicProvider, VertexProvider
 from version_manager import VersionManager
 from queue_manager import QueueManager
-from generator import run_generator
+from generator import run_generator, _call_with_continuation
 from coder import run_coder
 
 
@@ -271,3 +271,51 @@ async def update_policy(name: str, request: Request):
     with open(path, "wb") as f:
         f.write(body)
     return {"ok": True}
+
+
+class PolicyImproveRequest(BaseModel):
+    feedback: str
+    current_content: str
+
+
+@app.post("/api/policy/{name}/improve")
+async def improve_policy(name: str, body: PolicyImproveRequest):
+    if os.path.basename(name) != name:
+        raise HTTPException(400, "Invalid policy name")
+    path = os.path.join(POLICY_DIR, name)
+    if not os.path.exists(path):
+        raise HTTPException(404)
+
+    async def stream_gen():
+        client = _provider.get_client()
+        model = _provider.model_name
+        system = (
+            "You are a policy editor assistant. Rewrite the policy document provided by the user, "
+            "incorporating their feedback precisely and preserving all sections and structure "
+            "that are not affected by the feedback.\n\n"
+            "Rules:\n"
+            "- Output ONLY the full revised policy markdown. No preamble, no explanation, no ```markdown fences.\n"
+            "- Preserve all existing section headings and formatting conventions.\n"
+            "- Make the minimum changes needed to satisfy the feedback.\n"
+            "- Do not add unsolicited sections or remove content unrelated to the feedback."
+        )
+        messages = [{
+            "role": "user",
+            "content": (
+                f"Here is the current policy:\n\n{body.current_content}\n\n"
+                f"Feedback to incorporate:\n{body.feedback}\n\n"
+                "Please rewrite the full policy incorporating this feedback."
+            ),
+        }]
+        try:
+            async for chunk in _call_with_continuation(system, messages, cfg, client, model):
+                yield sse({"stage": "token", "text": chunk})
+            yield sse({"stage": "done"})
+        except Exception as e:
+            yield sse({"stage": "error", "text": str(e)})
+
+    return StreamingResponse(
+        stream_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
