@@ -1,0 +1,25 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Runtime data (versioned outputs and queue — gitignore but keep folder structure)
+backend/outputs/*/
+backend/queue/*/
+!backend/outputs/.gitkeep
+!backend/queue/.gitkeep
+
+# Node
+node_modules/
+frontend/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
