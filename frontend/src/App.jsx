@@ -109,28 +109,33 @@ export default function App() {
     const decoder = new TextDecoder()
 
     const read = async () => {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        const lines = decoder.decode(value).split('\n')
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const event = JSON.parse(line.slice(6))
-            if (event.stage === 'start') setActiveVersion(event.version)
-            if (event.stage === 'token') setPh1Log(l => [...l, event.text])
-            if (event.stage === 'batch_done') {
-              setPh1Log(l => [...l, `\n[Batch ${event.batch}: ${event.count} equations, total ${event.total}]\n`])
-              refreshVersions()
-            }
-            if (event.stage === 'gen_complete') {
-              setPh1Log(l => [...l, `\n[Generation complete — ${event.total} equations]\n`])
-            }
-          } catch { /* ignore */ }
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const lines = decoder.decode(value).split('\n')
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            try {
+              const event = JSON.parse(line.slice(6))
+              if (event.stage === 'start') setActiveVersion(event.version)
+              if (event.stage === 'token') setPh1Log(l => [...l, event.text])
+              if (event.stage === 'batch_done') {
+                setPh1Log(l => [...l, `\n[Batch ${event.batch}: ${event.count} equations, total ${event.total}]\n`])
+                refreshVersions()
+              }
+              if (event.stage === 'gen_complete') {
+                setPh1Log(l => [...l, `\n[Generation complete — ${event.total} equations]\n`])
+              }
+            } catch { /* ignore parse errors */ }
+          }
         }
+      } catch {
+        setPh1Log(l => [...l, '\n[Stream disconnected]\n'])
+      } finally {
+        setPh1Running(false)
+        refreshVersions()
       }
-      setPh1Running(false)
-      refreshVersions()
     }
     read()
   }, [refreshVersions])
@@ -154,32 +159,37 @@ export default function App() {
     const decoder = new TextDecoder()
 
     const read = async () => {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        const lines = decoder.decode(value).split('\n')
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const event = JSON.parse(line.slice(6))
-            if (event.stage === 'recovered') setPh2Log(l => [...l, `\n[Recovered ${event.count} interrupted batch(es) → pending]\n`])
-            if (event.stage === 'token') setPh2Log(l => [...l, event.text])
-            if (event.stage === 'code_batch_done') {
-              setPh2Log(l => [...l, `\n[Coded batch: ${event.count} files, total ${event.total}]\n`])
-              refreshVersions()
-              refreshQueue(version)
-            }
-            if (event.stage === 'code_complete') {
-              setPh2Log(l => [...l, `\n[Coding complete — ${event.total} Java files]\n`])
-            }
-            if (event.stage === 'error') {
-              setPh2Log(l => [...l, `\n[ERROR: ${event.text}]\n`])
-            }
-          } catch { /* ignore */ }
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const lines = decoder.decode(value).split('\n')
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            try {
+              const event = JSON.parse(line.slice(6))
+              if (event.stage === 'recovered') setPh2Log(l => [...l, `\n[Recovered ${event.count} interrupted batch(es) → pending]\n`])
+              if (event.stage === 'token') setPh2Log(l => [...l, event.text])
+              if (event.stage === 'code_batch_done') {
+                setPh2Log(l => [...l, `\n[Coded batch: ${event.count} files, total ${event.total}]\n`])
+                refreshVersions()
+                refreshQueue(version)
+              }
+              if (event.stage === 'code_complete') {
+                setPh2Log(l => [...l, `\n[Coding complete — ${event.total} Java files]\n`])
+              }
+              if (event.stage === 'error') {
+                setPh2Log(l => [...l, `\n[ERROR: ${event.text}]\n`])
+              }
+            } catch { /* ignore parse errors */ }
+          }
         }
+      } catch {
+        setPh2Log(l => [...l, '\n[Stream disconnected]\n'])
+      } finally {
+        setPh2Running(false)
+        refreshVersions()
       }
-      setPh2Running(false)
-      refreshVersions()
     }
     read()
   }, [refreshVersions, refreshQueue])
