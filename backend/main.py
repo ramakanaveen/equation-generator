@@ -139,6 +139,14 @@ async def list_versions():
     return [v.__dict__ for v in versions]
 
 
+@app.delete("/api/versions/{version}")
+async def delete_version(version: str):
+    if version == _active_version:
+        raise HTTPException(400, "Cannot delete the active version")
+    await asyncio.to_thread(_version_mgr.delete_version, version)
+    return {"ok": True}
+
+
 @app.get("/api/versions/{version}")
 async def get_version(version: str):
     try:

@@ -126,6 +126,11 @@ class VersionManager:
             for r in runs
         ]
 
+    def delete_version(self, version: str):
+        """Hard-delete all outputs and queue data for a version."""
+        shutil.rmtree(os.path.join(OUTPUTS_DIR, version), ignore_errors=True)
+        shutil.rmtree(os.path.join(QUEUE_DIR, version), ignore_errors=True)
+
     def queue_root(self, version: str) -> str:
         return os.path.join(QUEUE_DIR, version)
 

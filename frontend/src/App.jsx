@@ -204,6 +204,13 @@ export default function App() {
     refreshQueue(version)
   }, [refreshQueue])
 
+  const deleteVersion = useCallback(async (version) => {
+    if (!confirm(`Delete ${version} and all its files? This cannot be undone.`)) return
+    await fetch(API.deleteVersion(version), { method: 'DELETE' })
+    setVersions(vs => vs.filter(v => v.version !== version))
+    setSelectedVersion(v => v === version ? null : v)
+  }, [])
+
   const activeMeta = versions.find(v => v.version === (selectedVersion || activeVersion))
 
   return (
@@ -255,7 +262,9 @@ export default function App() {
         <VersionSelector
           versions={versions}
           selectedVersion={selectedVersion}
+          activeVersion={activeVersion}
           onSelect={setSelectedVersion}
+          onDelete={deleteVersion}
         />
         <RightPanel
           selectedVersion={selectedVersion}

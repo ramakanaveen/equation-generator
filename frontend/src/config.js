@@ -16,5 +16,6 @@ export const API = {
   javaZip:          (v)    =>   `${BASE}/api/versions/${v}/java-zip`,
   javaRegenerate:   (v)    =>   `${BASE}/api/versions/${v}/java/regenerate`,
   javaArchives:     (v)    =>   `${BASE}/api/versions/${v}/java-archives`,
+  deleteVersion:(v)   =>   `${BASE}/api/versions/${v}`,
   policy:      (n)    =>   `${BASE}/api/policy/${n}`,
 }
