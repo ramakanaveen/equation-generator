@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
@@ -92,6 +93,38 @@ class VersionManager:
 
     def java_dir(self, version: str) -> str:
         return os.path.join(OUTPUTS_DIR, version, "java")
+
+    def archive_java(self, version: str) -> str | None:
+        """Move all .java files to java_archive/run_NNN/. Returns archive path or None if nothing to archive."""
+        java_dir = self.java_dir(version)
+        if not os.path.isdir(java_dir):
+            return None
+        files = [f for f in os.listdir(java_dir) if f.endswith(".java")]
+        if not files:
+            return None
+        archive_base = os.path.join(OUTPUTS_DIR, version, "java_archive")
+        os.makedirs(archive_base, exist_ok=True)
+        existing_runs = [d for d in os.listdir(archive_base) if d.startswith("run_")]
+        next_num = len(existing_runs) + 1
+        archive_dir = os.path.join(archive_base, f"run_{next_num:03d}")
+        os.makedirs(archive_dir)
+        for f in files:
+            shutil.move(os.path.join(java_dir, f), os.path.join(archive_dir, f))
+        return archive_dir
+
+    def list_java_archives(self, version: str) -> list[dict]:
+        """Return archive runs with file counts, newest first."""
+        archive_base = os.path.join(OUTPUTS_DIR, version, "java_archive")
+        if not os.path.isdir(archive_base):
+            return []
+        runs = sorted(
+            (d for d in os.listdir(archive_base) if d.startswith("run_")),
+            reverse=True,
+        )
+        return [
+            {"run": r, "files": len([f for f in os.listdir(os.path.join(archive_base, r)) if f.endswith(".java")])}
+            for r in runs
+        ]
 
     def queue_root(self, version: str) -> str:
         return os.path.join(QUEUE_DIR, version)

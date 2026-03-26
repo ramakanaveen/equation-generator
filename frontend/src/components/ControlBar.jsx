@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import PolicyEditor from './PolicyEditor'
 
 export default function ControlBar({
   ph1Running, ph2Running,
@@ -8,6 +9,7 @@ export default function ControlBar({
   onStartCode, onStopCode,
   onRetryFailed,
 }) {
+  const [showPolicyEditor, setShowPolicyEditor] = useState(false)
   const [objective, setObjective] = useState('')
 
   const version = selectedVersion || activeVersion
@@ -72,6 +74,19 @@ export default function ControlBar({
           <span className="badge badge-failed">failed {queueCounts.failed ?? 0}</span>
         </div>
       )}
+
+      {/* Policy editor */}
+      <div style={{ paddingTop: 4, borderTop: '1px solid #1f2937' }}>
+        <button
+          className="btn-ghost"
+          onClick={() => setShowPolicyEditor(true)}
+          style={{ width: '100%', fontSize: 12 }}
+        >
+          Edit Policies
+        </button>
+      </div>
+
+      {showPolicyEditor && <PolicyEditor onClose={() => setShowPolicyEditor(false)} />}
     </div>
   )
 }

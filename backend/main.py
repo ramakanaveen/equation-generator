@@ -221,6 +221,30 @@ async def download_java_zip(version: str):
 
 
 # ---------------------------------------------------------------------------
+# Java regeneration
+# ---------------------------------------------------------------------------
+
+@app.post("/api/versions/{version}/java/regenerate")
+async def regenerate_java(version: str):
+    q = QueueManager(version, _version_mgr)
+    # Archive current Java files
+    archive_path = await asyncio.to_thread(_version_mgr.archive_java, version)
+    # Recover orphaned + restore done → pending
+    recovered = await asyncio.to_thread(q.recover_processing)
+    restored = await asyncio.to_thread(q.reset_for_regen)
+    await asyncio.to_thread(_version_mgr.update_meta, version, java_file_count=0, status="coding")
+    return {
+        "archived_to": archive_path,
+        "restored_to_pending": restored + recovered,
+    }
+
+
+@app.get("/api/versions/{version}/java-archives")
+async def list_java_archives(version: str):
+    return await asyncio.to_thread(_version_mgr.list_java_archives, version)
+
+
+# ---------------------------------------------------------------------------
 # Policy
 # ---------------------------------------------------------------------------
 

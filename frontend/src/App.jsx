@@ -251,13 +251,14 @@ export default function App() {
           selectedVersion={selectedVersion}
           queueCounts={queueCounts}
           activeMeta={activeMeta}
+          onStartCode={startCode}
         />
       </div>
     </div>
   )
 }
 
-function RightPanel({ selectedVersion, queueCounts, activeMeta }) {
+function RightPanel({ selectedVersion, queueCounts, activeMeta, onStartCode }) {
   const [tab, setTab] = useState('equations')
 
   return (
@@ -282,7 +283,7 @@ function RightPanel({ selectedVersion, queueCounts, activeMeta }) {
       <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
         {tab === 'equations'
           ? <EquationsPanel version={selectedVersion} equationCount={activeMeta?.equation_count ?? 0} />
-          : <CodePanel version={selectedVersion} activeMeta={activeMeta} />
+          : <CodePanel version={selectedVersion} activeMeta={activeMeta} onRegenerate={(v) => onStartCode(v)} />
         }
       </div>
     </div>

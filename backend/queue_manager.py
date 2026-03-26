@@ -71,6 +71,18 @@ class QueueManager:
             os.remove(os.path.join(failed_dir, filename))
         return len(files)
 
+    def reset_for_regen(self) -> int:
+        """Move all done items back to pending for a Java regeneration run."""
+        done_dir = os.path.join(self._root, "done")
+        files = [f for f in os.listdir(done_dir) if f.endswith(".json")]
+        for filename in files:
+            item = self._read(os.path.join(done_dir, filename))
+            item.status = "pending"
+            item.error = None
+            self._write(item, "pending")
+            os.remove(os.path.join(done_dir, filename))
+        return len(files)
+
     def recover_processing(self) -> int:
         """Move orphaned processing items back to pending (e.g. after a crashed/stopped run)."""
         processing_dir = os.path.join(self._root, "processing")

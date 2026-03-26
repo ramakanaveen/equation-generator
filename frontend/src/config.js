@@ -13,6 +13,8 @@ export const API = {
   equationFile:(v, f) =>   `${BASE}/api/versions/${v}/equations/${f}`,
   java:        (v)    =>   `${BASE}/api/versions/${v}/java`,
   javaFile:    (v, f) =>   `${BASE}/api/versions/${v}/java/${f}`,
-  javaZip:     (v)    =>   `${BASE}/api/versions/${v}/java-zip`,
+  javaZip:          (v)    =>   `${BASE}/api/versions/${v}/java-zip`,
+  javaRegenerate:   (v)    =>   `${BASE}/api/versions/${v}/java/regenerate`,
+  javaArchives:     (v)    =>   `${BASE}/api/versions/${v}/java-archives`,
   policy:      (n)    =>   `${BASE}/api/policy/${n}`,
 }
