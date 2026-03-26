@@ -10,8 +10,16 @@ async def run_coder(code_policy_text, queue, version, version_mgr, cfg, client, 
     Ph2 loop. Yields SSE-ready dicts.
     Drains the queue. Exits when queue is empty AND stop_event is set.
     All blocking I/O is offloaded to a thread so the event loop stays free.
+    Safe to restart: recovers orphaned processing items and resumes from existing file count.
     """
-    coded_total = 0
+    # Recover any items stuck in processing from a previous interrupted run
+    recovered = await asyncio.to_thread(queue.recover_processing)
+    if recovered:
+        yield {"stage": "recovered", "count": recovered}
+
+    # Resume from existing count so meta doesn't reset to 0
+    meta = await asyncio.to_thread(version_mgr.get_meta, version)
+    coded_total = meta.java_file_count
     java_dir = version_mgr.java_dir(version)
 
     while True:

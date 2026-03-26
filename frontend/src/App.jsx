@@ -162,6 +162,7 @@ export default function App() {
           if (!line.startsWith('data: ')) continue
           try {
             const event = JSON.parse(line.slice(6))
+            if (event.stage === 'recovered') setPh2Log(l => [...l, `\n[Recovered ${event.count} interrupted batch(es) → pending]\n`])
             if (event.stage === 'token') setPh2Log(l => [...l, event.text])
             if (event.stage === 'code_batch_done') {
               setPh2Log(l => [...l, `\n[Coded batch: ${event.count} files, total ${event.total}]\n`])

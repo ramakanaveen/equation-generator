@@ -97,6 +97,12 @@ async def stop_generate():
 # Code (Ph2)
 # ---------------------------------------------------------------------------
 
+@app.post("/api/code/stop")
+async def stop_code():
+    _code_stop.set()
+    return {"ok": True}
+
+
 @app.post("/api/code/{version}")
 async def start_code(version: str):
     global _code_stop
@@ -121,12 +127,6 @@ async def _code_stream(code_policy: str, queue: QueueManager, version: str):
         code_policy, queue, version, _version_mgr, cfg, client, model, _code_stop
     ):
         yield sse(event)
-
-
-@app.post("/api/code/stop")
-async def stop_code():
-    _code_stop.set()
-    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

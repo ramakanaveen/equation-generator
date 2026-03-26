@@ -71,6 +71,18 @@ class QueueManager:
             os.remove(os.path.join(failed_dir, filename))
         return len(files)
 
+    def recover_processing(self) -> int:
+        """Move orphaned processing items back to pending (e.g. after a crashed/stopped run)."""
+        processing_dir = os.path.join(self._root, "processing")
+        files = [f for f in os.listdir(processing_dir) if f.endswith(".json")]
+        for filename in files:
+            item = self._read(os.path.join(processing_dir, filename))
+            item.status = "pending"
+            item.error = None
+            self._write(item, "pending")
+            os.remove(os.path.join(processing_dir, filename))
+        return len(files)
+
     def counts(self) -> dict:
         result = {}
         for subdir in ("pending", "processing", "done", "failed"):
