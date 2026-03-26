@@ -28,7 +28,7 @@ Validation, backtesting, and deployment are handled by downstream systems.
 
 | Input | Required | Description |
 |---|---|---|
-| Generation objective | Yes | e.g., "generate 20 alpha equations" |
+| Generation objective | Yes | e.g., "generate 25 alpha equations" |
 | Constraints | Optional | Depth, complexity, pattern family |
 | Example expressions with KPIs | Optional | Historical expressions to relate to |
 | Specific fields to use or avoid | Optional | Field inclusion/exclusion list |
@@ -118,7 +118,7 @@ Generate a diverse mix covering all of the following families:
 - Output file must be named: **`equations_output.md`**
 - Format: Markdown with YAML-style parameter blocks
 - Each equation must be self-contained and include all fields from Section 1.3
-- Generate **exactly 20** diverse expressions per run unless otherwise specified
+- Generate **exactly 25** diverse expressions per run unless otherwise specified
 
 ### Template per equation
 
@@ -155,5 +155,5 @@ Generate a diverse mix covering all of the following families:
 - [ ] All parameter ranges are within 1–1,000
 - [ ] Frequency is within 60–10,080 minutes
 - [ ] Expression is syntactically valid (balanced parentheses, valid operators)
-- [ ] All 6 pattern families represented across the 20 equations
+- [ ] All 6 pattern families represented across the 25 equations
 - [ ] Parameter grid search combinations documented
