@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { mdComponents } from '../mdComponents'
 
 export default function StreamLog({ ph1Log, ph2Log, ph1Running, ph2Running, onClearPh1, onClearPh2 }) {
   const [tab, setTab] = useState('ph1')
@@ -8,6 +9,7 @@ export default function StreamLog({ ph1Log, ph2Log, ph1Running, ph2Running, onCl
 
   const log = tab === 'ph1' ? ph1Log : ph2Log
   const content = log.join('')
+  const isRunning = tab === 'ph1' ? ph1Running : ph2Running
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -56,33 +58,28 @@ export default function StreamLog({ ph1Log, ph2Log, ph1Running, ph2Running, onCl
         flex: 1, overflowY: 'auto', padding: '12px 16px',
         background: '#050505', color: '#e0e0e0',
         fontSize: 13, lineHeight: 1.7,
+        position: 'relative',
       }}>
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            h3: ({ children }) => <h3 style={{ color: '#60a5fa', fontSize: 15, fontWeight: 700, margin: '20px 0 6px', borderBottom: '1px solid #1f2937', paddingBottom: 4 }}>{children}</h3>,
-            h4: ({ children }) => <h4 style={{ color: '#93c5fd', fontSize: 13, fontWeight: 600, margin: '10px 0 4px' }}>{children}</h4>,
-            p:  ({ children }) => <p style={{ margin: '4px 0 8px' }}>{children}</p>,
-            strong: ({ children }) => <strong style={{ color: '#f9fafb' }}>{children}</strong>,
-            em: ({ children }) => <em style={{ color: '#d1d5db' }}>{children}</em>,
-            code: ({ inline, children }) => inline
-              ? <code style={{ background: '#1f2937', padding: '1px 5px', borderRadius: 3, fontSize: 12, color: '#a3e635' }}>{children}</code>
-              : <pre style={{ background: '#111827', padding: '10px 12px', borderRadius: 4, overflowX: 'auto', fontSize: 12, color: '#a3e635', margin: '8px 0' }}><code>{children}</code></pre>,
-            table: ({ children }) => <table style={{ borderCollapse: 'collapse', width: '100%', margin: '8px 0', fontSize: 12 }}>{children}</table>,
-            th: ({ children }) => <th style={{ border: '1px solid #374151', padding: '5px 10px', background: '#1f2937', color: '#d1d5db', textAlign: 'left' }}>{children}</th>,
-            td: ({ children }) => <td style={{ border: '1px solid #374151', padding: '5px 10px' }}>{children}</td>,
-            hr: () => <hr style={{ border: 'none', borderTop: '1px solid #1f2937', margin: '16px 0' }} />,
-            ul: ({ children }) => <ul style={{ paddingLeft: 20, margin: '4px 0 8px' }}>{children}</ul>,
-            li: ({ children }) => <li style={{ margin: '2px 0' }}>{children}</li>,
-          }}
-        >
-          {content}
-        </ReactMarkdown>
-        {/* Status indicator appended below markdown */}
-        {log.filter(l => l.startsWith('\n[')).map((l, i) => (
-          <div key={i} style={{ color: '#6b7280', fontSize: 11, fontFamily: 'monospace', margin: '4px 0' }}>{l.trim()}</div>
-        ))}
-        <div ref={bottomRef} />
+        {!content && !isRunning ? (
+          <div style={{
+            position: 'absolute', inset: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#374151', fontSize: 13, fontStyle: 'italic', userSelect: 'none',
+          }}>
+            No log output yet — start a run to see streaming output here.
+          </div>
+        ) : (
+          <>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+              {content}
+            </ReactMarkdown>
+            {/* Status indicators appended below markdown */}
+            {log.filter(l => l.startsWith('\n[')).map((l, i) => (
+              <div key={i} style={{ color: '#6b7280', fontSize: 11, fontFamily: 'monospace', margin: '4px 0' }}>{l.trim()}</div>
+            ))}
+            <div ref={bottomRef} />
+          </>
+        )}
       </div>
     </div>
   )

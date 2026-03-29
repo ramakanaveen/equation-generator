@@ -82,9 +82,18 @@ export default function App() {
     pollRef.current = setInterval(() => {
       refreshVersions()
       refreshQueue(activeVersion)
+      if (activeMeta?.status === 'done' && !ph1Running && !ph2Running) {
+        clearInterval(pollRef.current)
+      }
     }, 3000)
     return () => clearInterval(pollRef.current)
-  }, [activeVersion, refreshVersions, refreshQueue])
+  }, [activeVersion, activeMeta, ph1Running, ph2Running, refreshVersions, refreshQueue])
+
+  // Keep queue badges current when user views a non-active version
+  useEffect(() => {
+    if (!selectedVersion || selectedVersion === activeVersion) return
+    refreshQueue(selectedVersion)
+  }, [selectedVersion, activeVersion, refreshQueue])
 
   useEffect(() => {
     if (activeVersion) setSelectedVersion(activeVersion)
@@ -179,7 +188,7 @@ export default function App() {
                 setPh2Log(l => [...l, `\n[Coding complete — ${event.total} Java files]\n`])
               }
               if (event.stage === 'error') {
-                setPh2Log(l => [...l, `\n[ERROR: ${event.text}]\n`])
+                setPh2Log(l => [...l, `\n> ⚠ ERROR: ${event.text}\n\n`])
               }
             } catch { /* ignore parse errors */ }
           }
@@ -216,7 +225,7 @@ export default function App() {
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
       {/* Left: Control */}
-      <div style={{ width: 220, flexShrink: 0, borderRight: '1px solid #1f2937', padding: 16, overflowY: 'auto' }}>
+      <div style={{ width: 240, flexShrink: 0, borderRight: '1px solid #1f2937', padding: 16, overflowY: 'auto' }}>
         <ControlBar
           ph1Running={ph1Running}
           ph2Running={ph2Running}

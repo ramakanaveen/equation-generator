@@ -3,7 +3,7 @@ export default function VersionSelector({ versions, selectedVersion, activeVersi
 
   return (
     <div style={{
-      display: 'flex', flexWrap: 'wrap', gap: 4, padding: '8px 12px',
+      display: 'flex', flexWrap: 'nowrap', overflowX: 'auto', gap: 4, padding: '8px 12px',
       borderBottom: '1px solid #1f2937', background: '#111827',
     }}>
       {versions.map(v => {

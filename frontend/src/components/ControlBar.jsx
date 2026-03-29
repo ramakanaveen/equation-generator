@@ -31,7 +31,7 @@ export default function ControlBar({
           style={{
             width: '100%', background: '#1f2937', color: '#e0e0e0',
             border: '1px solid #374151', borderRadius: 4, padding: '6px 8px',
-            fontSize: 12, resize: 'vertical',
+            fontSize: 12, resize: 'vertical', maxHeight: 120, overflowY: 'auto',
           }}
         />
       </div>
