@@ -21,6 +21,8 @@ export default function App() {
   const [ph2Log, setPh2Log] = useState([])
   const [rightWidth, setRightWidth] = useState(DEFAULT_RIGHT)
 
+  const activeMeta = versions.find(v => v.version === (selectedVersion || activeVersion))
+
   const pollRef = useRef(null)
   const dragging = useRef(false)
   const dragStartX = useRef(0)
@@ -219,8 +221,6 @@ export default function App() {
     setVersions(vs => vs.filter(v => v.version !== version))
     setSelectedVersion(v => v === version ? null : v)
   }, [])
-
-  const activeMeta = versions.find(v => v.version === (selectedVersion || activeVersion))
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
