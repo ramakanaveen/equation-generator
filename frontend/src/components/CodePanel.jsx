@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { API } from '../config'
 
 export default function CodePanel({ version, activeMeta, onRegenerate }) {
@@ -149,14 +151,17 @@ export default function CodePanel({ version, activeMeta, onRegenerate }) {
               Download {selectedFile}
             </button>
           </div>
-          <pre style={{
-            background: '#050505', borderRadius: 4, padding: 12,
-            fontSize: 12, lineHeight: 1.6, overflowX: 'auto',
-            color: '#93c5fd', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-            border: '1px solid #1f2937',
-          }}>
+          <SyntaxHighlighter
+            language="java"
+            style={vscDarkPlus}
+            customStyle={{
+              borderRadius: 4, fontSize: 12, lineHeight: 1.6,
+              border: '1px solid #1f2937', margin: 0,
+            }}
+            wrapLongLines
+          >
             {content}
-          </pre>
+          </SyntaxHighlighter>
         </>
       )}
     </div>
