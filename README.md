@@ -19,7 +19,8 @@ policy/policy.md ──► Ph1 Generator ──► queue/vN/pending/ ──► P
 - Versioned outputs — switch between runs in the UI
 - Regenerate Java for any version (archives old files to `java_archive/run_NNN/`)
 - Download all Java files for a version as a ZIP
-- Edit `policy.md` and `code.md` directly from the UI
+- Edit `policy.md` and `code.md` directly from the UI, with AI-assisted rewriting
+- **CLI tools** — generate a single equation or Java file from the command line (no UI needed)
 - Configurable port and CORS via env vars — no hardcoded localhost
 - All blocking I/O is async so the server stays responsive during generation
 
@@ -134,6 +135,50 @@ vertex:
 6. Download a full version as a ZIP using **Download ZIP** in the Java tab
 7. Click **Edit Policies** to modify `policy.md` or `code.md` — changes apply on the next run
 8. Click **Regenerate Java** to re-run Ph2 with a new `code.md` — old files are archived
+
+---
+
+## CLI tools
+
+For quick one-off generation without the web UI, two standalone scripts are available in `backend/`.
+
+### `eqgen.py` — generate a single equation
+
+```bash
+cd backend
+
+# Stream one equation to stdout
+python eqgen.py
+
+# With an objective
+python eqgen.py -o "volatility-adjusted momentum"
+
+# Save output to a file as well
+python eqgen.py --file eq.md
+```
+
+### `codegen.py` — generate Java code for one equation
+
+```bash
+# From a file produced by eqgen.py
+python codegen.py -i eq.md
+
+# Write .java files to an output directory
+python codegen.py -i eq.md -d ./out/
+
+# Read equation from stdin (supports piping)
+cat eq.md | python codegen.py -d ./out/
+```
+
+### Pipeline — equation → code in one shot
+
+```bash
+python eqgen.py | python codegen.py -d ./out/
+ls out/
+# AlphaExpression.java  Alpha_MyStrategy.java
+```
+
+Both scripts stream output to the terminal as Claude generates it, and use the same `config.yaml` and `.env` as the web backend.
 
 ---
 
