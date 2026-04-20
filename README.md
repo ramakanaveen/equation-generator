@@ -180,9 +180,14 @@ python codegen.py -i eq.md -d ./out/ --codebase /path/to/java/project
 
 The analyzer runs in three phases:
 
-1. **Type index** — regex-scans all `.java` files in ~1 second regardless of codebase size, building a structural map of every class, interface, and their relationships
-2. **Agentic exploration** — reads `CLAUDE.md` / `README` / `pom.xml` first, then uses `glob`, `read_file` (with line-range support), and `search_code` tools guided by the equation being implemented — no hardcoded naming patterns
-3. **Verification pass** — a second Claude call checks that the generated class correctly implements all abstract methods, has the right imports, and follows the lifecycle contract
+1. **Type index** — Python regex-scans all `.java` files in ~1 second regardless of codebase size, building a full structural map (class names, kinds, extends/implements, methods) before any Claude call
+2. **3 parallel explorer subagents** — modelled on the Claude Code Ultra pattern, three Claude agents run simultaneously via `asyncio.gather()`:
+   - *Explorer 1* — finds the base interface / abstract class
+   - *Explorer 2* — finds a concrete implementation to use as a pattern
+   - *Explorer 3* — reads `CLAUDE.md`, `README`, `pom.xml` for build constraints and package conventions
+   Each explorer gets a focused slice of the type index and its own tool-use loop (`glob`, `read_file` with line ranges, `search_code`). No hardcoded naming patterns — exploration is guided by the equation being implemented.
+3. **Synthesizer** — merges the three reports into a `CodebaseProfile`. Has an `ask_followup_question` tool that presents specific options if critical info (base interface, package) is missing.
+4. **Verification pass** — a final Claude call checks the generated class for correct interface implementation, all abstract methods, required imports, and lifecycle contract compliance.
 
 ```bash
 # Full pipeline: generate equation and codebase-aware Java in one shot
@@ -193,12 +198,16 @@ Example output for a codebase where signals implement `Computable` (not `AlphaEx
 
 ```
 [Phase 1: Analyzing codebase at /path/to/project]
-[Type index: 142 classes scanned]
-  [glob({"pattern":"**/*.java"})]
-  [read_file({"path":"src/main/java/com/trading/core/Computable.java"})]
+[Type index: 142 classes | Launching 3 parallel explorers]
+  [Explorer-1 (Base Types)] read_file({"path":"src/.../Computable.java"})
+  [Explorer-2 (Implementations)] search_code({"directory":"src","pattern":"implements Computable"})
+  [Explorer-3 (Build + Conventions)] read_file({"path":"CLAUDE.md"})
   ...
+[Explorer-1 (Base Types): done]
+[Explorer-2 (Implementations): done]
+[Explorer-3 (Build + Conventions): done]
+[Synthesizer: merging reports]
 [Phase 2: Generating code]
-...
 [Phase 3: Verifying output]
 [Verified ✓]
 [Written: ./out/Alpha_MySignal.java]
