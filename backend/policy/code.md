@@ -102,3 +102,18 @@ Produce all files in sequence, each delimited clearly:
 ```
 
 Start with `AlphaExpression.java` (the interface), then one file per equation.
+
+---
+
+## Codebase Override
+
+If a **## Target Codebase** section appears at the end of this system prompt, apply these overrides instead of the defaults above:
+
+- Use the exact `package` declaration from the profile's **Package** section
+- Implement the base class/interface from **Base Interface / Abstract Class** (not `AlphaExpression`)
+- Add all imports from **Required Imports**
+- Follow **Lifecycle Contract** exactly — annotations, constructor parameters, init/shutdown methods
+- Mirror the pattern shown in **Implementation Pattern**
+- Do **NOT** output `AlphaExpression.java` — it already exists in the target codebase
+- Follow all rules listed under **Codebase Rules**
+- Never return `NaN` — use `0.0` as the fallback for all missing-data or error cases

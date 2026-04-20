@@ -28,6 +28,10 @@ async def main():
         "--dir", "-d", default=None,
         help="Output directory to write .java files into",
     )
+    parser.add_argument(
+        "--codebase", "-c", default=None,
+        help="Path to local Java project root for codebase-aware generation",
+    )
     args = parser.parse_args()
 
     with open(os.path.join(POLICY_DIR, "code.md")) as f:
@@ -43,12 +47,35 @@ async def main():
         print("Error: no equation input provided.", file=sys.stderr)
         sys.exit(1)
 
+    # Provider created before codebase block (needed for analysis)
     provider = VertexProvider(cfg) if cfg.provider == "vertex" else AnthropicProvider(cfg)
     client = provider.get_client()
     model = provider.model_name
 
-    user_msg = f"Generate Java code for this alpha equation:\n\n{equation_text}"
+    # Phase 1: codebase analysis (only when --codebase is set)
+    profile = None
+    if args.codebase:
+        from codebase_analyzer import analyze_codebase, verify_generated_code
+        cb_path = os.path.realpath(args.codebase)
+        if not os.path.isdir(cb_path):
+            print(f"Error: --codebase path is not a directory: {args.codebase}", file=sys.stderr)
+            sys.exit(1)
+        print(f"\n[Phase 1: Analyzing codebase at {cb_path}]", file=sys.stderr)
+        profile = await analyze_codebase(
+            root_path=cb_path,
+            equation_text=equation_text,
+            client=client,
+            model=model,
+            cfg=cfg,
+            progress_cb=lambda t: print(t, end="", flush=True, file=sys.stderr),
+        )
+        code_policy += f"\n\n---\n\n## Target Codebase\n\n{profile}"
+        print("\n\n[Phase 2: Generating code]\n", file=sys.stderr)
+    else:
+        print("[Generating code (no codebase provided)]\n", file=sys.stderr)
 
+    # Phase 2: generate
+    user_msg = f"Generate Java code for this alpha equation:\n\n{equation_text}"
     result = ""
     async for chunk in _call_with_continuation(
         system=code_policy,
@@ -57,8 +84,18 @@ async def main():
     ):
         print(chunk, end="", flush=True)
         result += chunk
-
     print()
+
+    # Phase 3: verify (only when codebase was provided)
+    if profile:
+        print("\n[Phase 3: Verifying output]\n", file=sys.stderr)
+        corrected = await verify_generated_code(result, profile, client, model, cfg)
+        if corrected:
+            print("[Issues found — corrections applied]\n", file=sys.stderr)
+            result = corrected
+        else:
+            print("[Verified ✓]\n", file=sys.stderr)
+
     if args.dir:
         _write_java_files(result, args.dir)
 

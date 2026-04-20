@@ -20,7 +20,7 @@ policy/policy.md ──► Ph1 Generator ──► queue/vN/pending/ ──► P
 - Regenerate Java for any version (archives old files to `java_archive/run_NNN/`)
 - Download all Java files for a version as a ZIP
 - Edit `policy.md` and `code.md` directly from the UI, with AI-assisted rewriting
-- **CLI tools** — generate a single equation or Java file from the command line (no UI needed)
+- **CLI tools** — generate a single equation or codebase-aware Java class from the command line (no UI needed)
 - Configurable port and CORS via env vars — no hardcoded localhost
 - All blocking I/O is async so the server stays responsive during generation
 
@@ -169,6 +169,42 @@ python codegen.py -i eq.md -d ./out/
 # Read equation from stdin (supports piping)
 cat eq.md | python codegen.py -d ./out/
 ```
+
+### Codebase-aware generation
+
+Pass `--codebase` to point `codegen.py` at an existing Java project. It will analyze the codebase first, then generate a class that integrates seamlessly — using the actual base interface, package, imports, and conventions it discovers.
+
+```bash
+python codegen.py -i eq.md -d ./out/ --codebase /path/to/java/project
+```
+
+The analyzer runs in three phases:
+
+1. **Type index** — regex-scans all `.java` files in ~1 second regardless of codebase size, building a structural map of every class, interface, and their relationships
+2. **Agentic exploration** — reads `CLAUDE.md` / `README` / `pom.xml` first, then uses `glob`, `read_file` (with line-range support), and `search_code` tools guided by the equation being implemented — no hardcoded naming patterns
+3. **Verification pass** — a second Claude call checks that the generated class correctly implements all abstract methods, has the right imports, and follows the lifecycle contract
+
+```bash
+# Full pipeline: generate equation and codebase-aware Java in one shot
+python eqgen.py | python codegen.py -d ./out/ --codebase /path/to/java/project
+```
+
+Example output for a codebase where signals implement `Computable` (not `AlphaExpression`):
+
+```
+[Phase 1: Analyzing codebase at /path/to/project]
+[Type index: 142 classes scanned]
+  [glob({"pattern":"**/*.java"})]
+  [read_file({"path":"src/main/java/com/trading/core/Computable.java"})]
+  ...
+[Phase 2: Generating code]
+...
+[Phase 3: Verifying output]
+[Verified ✓]
+[Written: ./out/Alpha_MySignal.java]
+```
+
+The generated class uses `implements Computable`, `package com.trading.signals`, and follows the exact pattern of existing implementations — ready to drop into the project.
 
 ### Pipeline — equation → code in one shot
 
