@@ -69,7 +69,7 @@ async def main():
             sys.exit(1)
 
         print(f"\n[Phase 1: Analyzing codebase at {cb_path}]", file=sys.stderr)
-        profile, symbol_index = await analyze_codebase(
+        profile, symbol_index, _ = await analyze_codebase(
             root_path=cb_path,
             client=client, model=model, cfg=cfg,
             progress_cb=lambda t: print(t, end="", flush=True, file=sys.stderr),
@@ -91,11 +91,14 @@ async def main():
     cb_root = os.path.realpath(args.codebase) if args.codebase else None
     cb_index = symbol_index if args.codebase else None
 
-    async for _, filename, _ in _run_codegen_loop(
+    async for etype, payload, _ in _run_codegen_loop(
         system, user_msg, out_dir, cfg, client, model,
         codebase_root=cb_root, symbol_index=cb_index,
     ):
-        print(f"[Written: {os.path.join(out_dir, filename)}]", file=sys.stderr)
+        if etype == 'summary':
+            print(f"\n{payload}", file=sys.stderr)
+        else:
+            print(f"[Written: {os.path.join(out_dir, payload)}]", file=sys.stderr)
 
     print()
 

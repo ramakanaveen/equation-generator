@@ -21,7 +21,7 @@ import os
 import re
 import sys
 
-from generator import _call_with_continuation, api_call_with_backoff
+from generator import _call_with_continuation, api_call_with_backoff, UsageTracker
 
 # ---------------------------------------------------------------------------
 # Profile cache  (OpenCode pattern: content-hash, project-local, no git needed)
@@ -732,6 +732,7 @@ async def _run_explorer(
     symbol_index: dict,
     lang: str,
     progress_cb=None,
+    tracker=None,
 ) -> str:
     messages = [{'role': 'user', 'content': initial_msg}]
     files_read = [0]
@@ -772,6 +773,9 @@ async def _run_explorer(
                 system=system,
                 messages=messages,
             )
+
+        if tracker:
+            tracker.record(response)
 
         tool_uses = [b for b in response.content if b.type == 'tool_use']
         text_blocks = [b for b in response.content if b.type == 'text']
@@ -855,6 +859,7 @@ async def _synthesize(
     cfg,
     clarification_note: str = '',
     progress_cb=None,
+    tracker=None,
 ) -> str:
     """
     Stateless synthesis — no tool loop.
@@ -881,7 +886,8 @@ async def _synthesize(
     )
     messages = [{'role': 'user', 'content': user_content}]
     profile = ''
-    async for chunk in _call_with_continuation(system, messages, cfg, client, model):
+    async for chunk in _call_with_continuation(system, messages, cfg, client, model,
+                                                on_response=tracker.record if tracker else None):
         profile += chunk
         if progress_cb:
             progress_cb(chunk)
@@ -898,13 +904,15 @@ async def _synthesize_with_clarification(
     model: str,
     cfg,
     progress_cb=None,
+    tracker=None,
 ) -> str:
     """
     Synthesize → check completeness → ask user if UNCLEAR → re-synthesize.
     Orchestrator-level clarification loop (Claude Code parent loop pattern).
     Full explorer reports are always preserved and re-sent on retry — no data loss.
     """
-    profile = await _synthesize(reports, lang, client, model, cfg, progress_cb=progress_cb)
+    profile = await _synthesize(reports, lang, client, model, cfg,
+                                 progress_cb=progress_cb, tracker=tracker)
 
     unclear = _unclear_sections(profile)
     if not unclear:
@@ -924,6 +932,7 @@ async def _synthesize_with_clarification(
         reports, lang, client, model, cfg,
         clarification_note=clarification_note,
         progress_cb=progress_cb,
+        tracker=tracker,
     )
 
 # ---------------------------------------------------------------------------
@@ -937,7 +946,7 @@ async def analyze_codebase(
     cfg,
     progress_cb=None,
     equation_text: str = '',  # kept for backwards compat, no longer used in prompts
-) -> tuple[str, dict]:
+):
     """
     Analyze any language codebase using 3 parallel explorer subagents + 1 synthesizer.
     Returns (CodebaseProfile, symbol_index).
@@ -958,8 +967,11 @@ async def analyze_codebase(
     cached = await asyncio.to_thread(_load_cached_profile, root_path, extensions)
     if cached:
         if progress_cb:
-            progress_cb(f'[Language: {lang} | Profile cache hit — skipping analysis]\n')
-        return cached, symbol_index
+            progress_cb(
+                f'[Language: {lang} | Profile cache hit — skipping analysis]\n'
+                f'[Phase 1: Codebase Analysis] 0 calls · (cache hit)\n'
+            )
+        return cached, symbol_index, UsageTracker()
 
     bootstrap = await asyncio.to_thread(_bootstrap_context, root_path, lang)
 
@@ -974,6 +986,8 @@ async def analyze_codebase(
             f'Explorers: {exp_model} | Launching 3 in parallel]\n'
         )
 
+    tracker = UsageTracker()
+
     r1, r2, r3 = await asyncio.gather(
         _run_explorer(
             name='Explorer-1 (Base Types)',
@@ -986,6 +1000,7 @@ async def analyze_codebase(
             ),
             root_path=root_path, client=client, model=model, cfg=cfg,
             symbol_index=symbol_index, lang=lang, progress_cb=progress_cb,
+            tracker=tracker,
         ),
         _run_explorer(
             name='Explorer-2 (Implementations)',
@@ -996,6 +1011,7 @@ async def analyze_codebase(
             ),
             root_path=root_path, client=client, model=model, cfg=cfg,
             symbol_index=symbol_index, lang=lang, progress_cb=progress_cb,
+            tracker=tracker,
         ),
         _run_explorer(
             name='Explorer-3 (Build + Conventions)',
@@ -1003,15 +1019,21 @@ async def analyze_codebase(
             initial_msg=f'Language: {lang}\n\nBootstrap context:\n{bootstrap}',
             root_path=root_path, client=client, model=model, cfg=cfg,
             symbol_index=symbol_index, lang=lang, progress_cb=progress_cb,
+            tracker=tracker,
         ),
     )
 
-    profile = await _synthesize_with_clarification([r1, r2, r3], lang, client, model, cfg, progress_cb)
+    profile = await _synthesize_with_clarification(
+        [r1, r2, r3], lang, client, model, cfg, progress_cb, tracker=tracker
+    )
+
+    if progress_cb:
+        progress_cb(f'{tracker.summary("Phase 1: Codebase Analysis")}\n')
 
     # Save to project-local cache for future runs
     await asyncio.to_thread(_save_cached_profile, root_path, extensions, profile)
 
-    return profile, symbol_index
+    return profile, symbol_index, tracker
 
 # ---------------------------------------------------------------------------
 # Verification

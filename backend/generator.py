@@ -31,11 +31,35 @@ async def api_call_with_backoff(fn, *args, max_retries: int = 5, **kwargs):
     raise RuntimeError('unreachable')
 
 
-async def _call_with_continuation(system: str, messages: list, cfg, client, model: str):
+class UsageTracker:
+    """Accumulates token usage and API call counts across a phase."""
+
+    def __init__(self):
+        self.api_calls = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+
+    def record(self, response) -> None:
+        self.api_calls += 1
+        if hasattr(response, 'usage'):
+            self.input_tokens += getattr(response.usage, 'input_tokens', 0)
+            self.output_tokens += getattr(response.usage, 'output_tokens', 0)
+
+    def summary(self, label: str = '') -> str:
+        total = self.input_tokens + self.output_tokens
+        prefix = f'[{label}] ' if label else ''
+        return (
+            f'{prefix}{self.api_calls} calls · '
+            f'{self.input_tokens:,} in + {self.output_tokens:,} out = {total:,} tokens'
+        )
+
+
+async def _call_with_continuation(system: str, messages: list, cfg, client, model: str, on_response=None):
     """
     Async generator yielding text chunks.
     Handles stop_reason == "max_tokens" via continuation messages.
     Retries on 429 via api_call_with_backoff.
+    on_response: optional callable(response) — called after each API response (for UsageTracker).
     """
     for _ in range(cfg.max_continuations + 1):
         response = await api_call_with_backoff(
@@ -45,6 +69,8 @@ async def _call_with_continuation(system: str, messages: list, cfg, client, mode
             system=system,
             messages=messages,
         )
+        if on_response:
+            on_response(response)
         text = next((b.text for b in response.content if b.type == "text"), "")
         yield text
         if response.stop_reason != "max_tokens":

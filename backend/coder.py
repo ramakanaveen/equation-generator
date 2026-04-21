@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 
-from generator import _call_with_continuation, api_call_with_backoff
+from generator import _call_with_continuation, api_call_with_backoff, UsageTracker
 
 
 _WRITE_FILE_TOOL = {
@@ -114,7 +114,7 @@ This summary will replace the full history. Be dense but accurate.
 """.strip()
 
 
-async def _compact_messages(messages: list, cfg, client, model: str) -> list:
+async def _compact_messages(messages: list, cfg, client, model: str, tracker=None) -> list:
     """
     Claude Code /compact pattern: summarise older history, keep recent turns intact.
     Only fires when total message content exceeds _COMPACT_THRESHOLD.
@@ -136,6 +136,8 @@ async def _compact_messages(messages: list, cfg, client, model: str) -> list:
             system=_COMPACT_SYSTEM,
             messages=to_summarise + [{'role': 'user', 'content': 'Summarise the session so far.'}],
         )
+        if tracker:
+            tracker.record(summary_resp)
         summary = next((b.text for b in summary_resp.content if b.type == 'text'), '')
         compacted = [
             {'role': 'user', 'content': f'[Compacted session history]\n{summary}'},
@@ -177,7 +179,7 @@ def _gen_search_code(inputs: dict, root: str) -> str:
 
 async def _run_codegen_loop(
     system, user_msg, out_dir, cfg, client, model,
-    codebase_root=None, symbol_index=None,
+    codebase_root=None, symbol_index=None, tracker=None,
 ):
     """
     Tool-use loop for code generation (Claude Code pattern).
@@ -188,13 +190,15 @@ async def _run_codegen_loop(
     """
     messages = [{'role': 'user', 'content': user_msg}]
     count = 0
+    if tracker is None:
+        tracker = UsageTracker()
 
     tools = list(_BASE_CODEGEN_TOOLS)
     if codebase_root and symbol_index is not None:
         tools += _CODEBASE_TOOLS
 
     for _ in range(_MAX_CODEGEN_TURNS):
-        messages = await _compact_messages(messages, cfg, client, model)
+        messages = await _compact_messages(messages, cfg, client, model, tracker=tracker)
 
         response = await api_call_with_backoff(
             client.messages.create,
@@ -204,6 +208,7 @@ async def _run_codegen_loop(
             system=system,
             messages=messages,
         )
+        tracker.record(response)
 
         tool_uses = [b for b in response.content if b.type == 'tool_use']
 
@@ -272,6 +277,8 @@ async def _run_codegen_loop(
 
         break
 
+    yield ('summary', tracker.summary('Phase 2: Code Generation'), count)
+
 
 def _strip_fences(content: str) -> str:
     content = content.strip()
@@ -316,7 +323,11 @@ async def run_coder(code_policy_text, queue, version, version_mgr, cfg, client, 
             user_msg = f"Generate code for these {len(item.equations)} alpha equation(s):\n\n{eq_text}"
             batch_count = 0
 
-            async for _, filename, count in _run_codegen_loop(system, user_msg, java_dir, cfg, client, model):
+            async for etype, payload, count in _run_codegen_loop(system, user_msg, java_dir, cfg, client, model):
+                if etype == 'summary':
+                    yield {"stage": "usage_summary", "text": payload + '\n', "phase": "code"}
+                    continue
+                filename = payload
                 batch_count = count
                 coded_total += 1
                 await asyncio.to_thread(version_mgr.update_meta, version, java_file_count=coded_total)
