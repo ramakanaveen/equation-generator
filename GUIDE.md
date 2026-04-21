@@ -141,8 +141,8 @@ python codegen.py -i eq.md -d ./out/ --codebase /path/to/your/project
 4. Stateless synthesizer — single _call_with_continuation call merges the 3 reports.
    If a critical field is UNCLEAR:, the orchestrator asks you directly, then
    re-synthesizes with the full original reports preserved (lossless).
-5. Code generated: your policy.md style + CodebaseProfile facts
-6. Verification pass checks base type, abstract methods, imports, package, no NaN/None
+5. Code generated using codegen.md policy + CodebaseProfile — LLM has live access to
+   read_file, search_code, and query_symbols during generation (not just the profile).
 ```
 
 **Progress output:**
@@ -157,10 +157,19 @@ python codegen.py -i eq.md -d ./out/ --codebase /path/to/your/project
 [Explorer-2 (Implementations): done]
 [Explorer-3 (Build + Conventions): done]
 [Synthesizer: merging reports]
+[Phase 1: Codebase Analysis] 7 calls · 45,230 in + 8,120 out = 53,350 tokens
+
 [Phase 2: Generating code]
-[Phase 3: Verifying output]
-[Verified ✓]
 [Written: ./out/volume_weighted_momentum_alpha.py]
+
+[Phase 2: Code Generation] 4 calls · 12,450 in + 3,210 out = 15,660 tokens
+```
+
+On a repeated run (same codebase, any equation):
+
+```
+[Language: python | Profile cache hit — skipping analysis]
+[Phase 1: Codebase Analysis] 0 calls · (cache hit)
 ```
 
 **If the analyzer can't determine the base type** (multiple plausible candidates), it will ask:
@@ -184,30 +193,37 @@ python eqgen.py -o "mean reversion" | python codegen.py -d ./out/ --codebase /pa
 
 ## How policies work
 
-The system uses two policies, both editable from the UI or directly:
+The system uses three policies, all editable directly (two also from the UI):
 
 ```
-backend/policy/policy.md   — equation generation rules
-backend/policy/code.md     — code generation rules (your style guide)
+backend/policy/policy.md   — equation generation rules (web UI + CLI)
+backend/policy/code.md     — standalone code generation style guide (used when no --codebase)
+backend/policy/codegen.md  — codebase-aware generation rules (used with --codebase)
 ```
 
-`code.md` is **your** file. The codebase analyzer never modifies it. When `--codebase` is used,
-the discovered profile is appended to your policy at runtime:
+`code.md` and `codegen.md` are **your** files — the system never modifies them.
+
+When `--codebase` is used, the discovered CodebaseProfile is appended to `codegen.md` at runtime:
 
 ```
-[your code.md]
+[your codegen.md]
 
----
+## Codebase Profile
 
-## Target Codebase
-Language: python
-Package / Module: trading.signals
-Base Type: class BaseSignal(ABC): ...
+## Language
+python
+
+## Package / Module
+trading.signals
+
+## Base Type
+class BaseSignal(ABC): ...
 ...
 ```
 
-The generator reads both: your policy provides the algorithm structure and style, the profile
-provides the language-specific integration details.
+The generator reads both: `codegen.md` provides generation rules and style, the profile provides
+language-specific integration facts. The profile cache means this analysis only runs once per
+codebase — any subsequent equation on the same unchanged codebase gets a cache hit.
 
 ---
 

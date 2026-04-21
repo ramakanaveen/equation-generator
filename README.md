@@ -189,7 +189,8 @@ The analyzer follows the Claude Code / DeepAgents pattern:
    - *Explorer 2* — finds a concrete production implementation to use as pattern
    - *Explorer 3* — reads `CLAUDE.md`, `README`, build manifest for package + conventions
 4. **Stateless synthesizer** — merges the three reports in a single `_call_with_continuation` call (no tool loop). If a critical field is `UNCLEAR:`, the orchestrator asks you directly and re-synthesizes with full reports preserved — no data loss.
-5. **Verification pass** — checks base type, abstract methods, imports, package, no NaN/None
+5. **Adaptive generation** — LLM has live access to `read_file`, `search_code`, and `query_symbols` during code generation, not just the profile. Context is compacted automatically when it grows large (Claude Code `/compact` pattern).
+6. **Profile cache** — SHA256 content hash stored in `<codebase>/.codegen-cache/`. Any file change invalidates it; cache hit skips all analysis (0 API calls for Phase 1).
 
 ```bash
 # Full pipeline — any language
@@ -204,16 +205,23 @@ python eqgen.py | python codegen.py -d ./out/ --codebase /path/to/project
   [Explorer-3 (Build + Conventions)] read_file({"path":"CLAUDE.md"})
   ...
 [Synthesizer: merging reports]
+[Phase 1: Codebase Analysis] 7 calls · 45,230 in + 8,120 out = 53,350 tokens
+
 [Phase 2: Generating code]
-[Verified ✓]
 [Written: ./out/VolumeWeightedMomentumSignal.java]   ← implements Computable, package com.trading.signals
+
+[Phase 2: Code Generation] 4 calls · 12,450 in + 3,210 out = 15,660 tokens
 ```
 
 **Python example**:
 ```
 [Language: python | Symbols: 38 (2 base types, 14 with inheritance) | Explorers: claude-haiku-... | Launching 3 in parallel]
   ...
+[Phase 1: Codebase Analysis] 6 calls · 38,100 in + 7,400 out = 45,500 tokens
+
 [Written: ./out/trading/signals/volume_weighted_momentum.py]   ← class FooSignal(BaseSignal)
+
+[Phase 2: Code Generation] 3 calls · 9,800 in + 2,100 out = 11,900 tokens
 ```
 
 Both scripts stream output to the terminal as Claude generates it, and use the same `config.yaml` and `.env` as the web backend.
