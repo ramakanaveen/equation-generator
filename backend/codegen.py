@@ -97,10 +97,10 @@ async def main():
             print("[Verified ✓]\n", file=sys.stderr)
 
     if args.dir:
-        _write_java_files(result, args.dir)
+        _write_files(result, args.dir)
 
 
-def _write_java_files(code_text: str, out_dir: str):
+def _write_files(code_text: str, out_dir: str):
     pattern = r"=== FILE: (.+?) ===\n(.*?)=== END FILE ==="
     matches = re.findall(pattern, code_text, re.DOTALL)
     if not matches:
@@ -109,6 +109,13 @@ def _write_java_files(code_text: str, out_dir: str):
     os.makedirs(out_dir, exist_ok=True)
     for filename, content in matches:
         path = os.path.join(out_dir, filename.strip())
+        # Create intermediate dirs (e.g. trading/signals/foo.py)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        content = content.strip()
+        # Strip markdown code fences if Claude wrapped the content
+        if content.startswith('```'):
+            content = re.sub(r'^```\w*\n?', '', content)
+            content = re.sub(r'\n?```$', '', content)
         with open(path, "w") as f:
             f.write(content.strip())
         print(f"[Written: {path}]", file=sys.stderr)

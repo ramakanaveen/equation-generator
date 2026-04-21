@@ -2,13 +2,14 @@
 
 ## What this project is
 
-A pipeline that generates alpha trading equations (Ph1) and Java implementation code (Ph2)
+A pipeline that generates alpha trading equations (Ph1) and implementation code (Ph2)
 using Claude AI. Runs as a web app (React + FastAPI) and as standalone CLI tools.
 Scales to thousands of equations via a file-based queue with versioned outputs.
 
-The CLI tools also support **codebase-aware generation**: point `codegen.py` at a real Java
-project and it will analyze the codebase using 3 parallel subagents, then generate a Java
-class that integrates correctly — right base interface, right package, right conventions.
+The CLI tools support **codebase-aware generation**: point `codegen.py` at any local project
+(Java, Python, TypeScript, Kotlin, Go) and it will auto-detect the language, analyze the
+codebase using 3 parallel Haiku subagents, then generate code that integrates correctly —
+right base class, right package/module, right conventions.
 
 ---
 
@@ -22,8 +23,8 @@ Web UI flow:
 
 CLI flow:
   python eqgen.py  ──► single equation (stdout)
-  python codegen.py ──► single Java class (stdout + optional --dir)
-  python eqgen.py | python codegen.py --codebase /path ──► codebase-aware Java
+  python codegen.py ──► single code file (stdout + optional --dir)
+  python eqgen.py | python codegen.py --codebase /path ──► codebase-aware code
 ```
 
 ---
@@ -38,15 +39,15 @@ CLI flow:
 | `config.py` + `config.yaml` | Config dataclass, `EQ_GEN_*` env var overrides |
 | `generator.py` | `_call_with_continuation()` primitive + `run_generator()` (Ph1 loop) |
 | `coder.py` | `run_coder()` (Ph2 loop) — drains queue, writes Java files |
-| `codebase_analyzer.py` | 3 parallel explorer subagents + synthesizer for codebase-aware codegen |
+| `codebase_analyzer.py` | Language-agnostic analyzer: 3 parallel Haiku explorers + stateless synthesizer |
 | `eqgen.py` | CLI: generate one equation |
-| `codegen.py` | CLI: generate Java for one equation, with optional `--codebase` |
+| `codegen.py` | CLI: generate code for one equation, with optional `--codebase` |
 | `version_manager.py` | Creates/manages versioned output directories, meta.json |
 | `queue_manager.py` | File-based queue: pending → processing → done/failed |
 | `equation_parser.py` | Parses Ph1 markdown into structured dicts |
 | `providers/` | `AnthropicProvider` and `VertexProvider` — identical interface |
-| `policy/policy.md` | System prompt for Ph1 (equation generation) |
-| `policy/code.md` | System prompt for Ph2 (Java code generation) |
+| `policy/policy.md` | System prompt for Ph1 (equation generation) — user-owned |
+| `policy/code.md` | System prompt for Ph2 (code generation style) — user-owned, never modified by system |
 
 ### Frontend (`frontend/src/`)
 
@@ -68,7 +69,7 @@ CLI flow:
 
 1. **`_call_with_continuation()`** — shared async generator in `generator.py`. Handles
    `stop_reason == "max_tokens"` by appending continuation messages. Used by Ph1, Ph2,
-   policy editor AI, and codegen verification pass.
+   policy editor AI, codegen synthesizer, and verification pass.
 
 2. **File-based queue** — each batch is a UUID-named JSON file moved between
    `pending/ → processing/ → done/` (or `failed/`). Survives server restarts.
@@ -82,13 +83,17 @@ CLI flow:
 5. **Providers** — `AnthropicProvider` and `VertexProvider` share an identical interface.
    Switch by setting `provider: vertex` in `config.yaml`.
 
-6. **Codebase analyzer** uses 3 parallel Claude subagents (Claude Code Ultra pattern):
-   - Explorer 1: finds base interfaces / abstract classes
-   - Explorer 2: finds a concrete implementation to use as a pattern
-   - Explorer 3: reads build manifest + package conventions
-   All run simultaneously via `asyncio.gather()`. A Synthesizer merges the reports.
-   Has `ask_followup_question` tool when critical info is missing.
-   Type index (Python regex scan of all .java files) is pre-built before Claude starts.
+6. **Codebase analyzer** — language-agnostic, following Claude Code / DeepAgents patterns:
+   - Language auto-detected from file extension counts
+   - Symbol index built in Python (~1s) — never pre-dumped into context
+   - `query_symbols` tool exposes index lazily; explorers call it on demand
+   - 3 parallel **Haiku** explorers via `asyncio.gather()` (cheap + fast)
+   - Synthesizer is a **stateless** `_call_with_continuation` call (no tool loop)
+   - Orchestrator checks profile completeness; asks user if `UNCLEAR:` sections found,
+     then re-synthesizes with full original reports preserved (lossless)
+   - All tool results capped at 80K chars (~20K tokens, DeepAgents threshold)
+   - `max_tokens` handled inline in explorer loop — no silent data loss
+   - `policy/code.md` is user-owned and never touched; codebase profile appended at runtime
 
 ---
 
@@ -101,14 +106,14 @@ cd backend
 python eqgen.py
 python eqgen.py -o "volatility-adjusted momentum" --file eq.md
 
-# Generate Java (generic)
+# Generate code (default: follows code.md policy)
 python codegen.py -i eq.md -d ./out/
 
-# Generate Java (codebase-aware — 3 parallel subagents + verify)
-python codegen.py -i eq.md -d ./out/ --codebase /path/to/java/project
+# Generate code (codebase-aware — any language)
+python codegen.py -i eq.md -d ./out/ --codebase /path/to/any/project
 
 # Full pipeline
-python eqgen.py | python codegen.py -d ./out/ --codebase /path/to/java/project
+python eqgen.py | python codegen.py -d ./out/ --codebase /path/to/project
 ```
 
 ---

@@ -20,7 +20,7 @@ policy/policy.md ──► Ph1 Generator ──► queue/vN/pending/ ──► P
 - Regenerate Java for any version (archives old files to `java_archive/run_NNN/`)
 - Download all Java files for a version as a ZIP
 - Edit `policy.md` and `code.md` directly from the UI, with AI-assisted rewriting
-- **CLI tools** — generate a single equation or codebase-aware Java class from the command line (no UI needed)
+- **CLI tools** — generate a single equation or codebase-aware code from the command line (no UI needed)
 - Configurable port and CORS via env vars — no hardcoded localhost
 - All blocking I/O is async so the server stays responsive during generation
 
@@ -172,55 +172,48 @@ cat eq.md | python codegen.py -d ./out/
 
 ### Codebase-aware generation
 
-Pass `--codebase` to point `codegen.py` at an existing Java project. It will analyze the codebase first, then generate a class that integrates seamlessly — using the actual base interface, package, imports, and conventions it discovers.
+Pass `--codebase` to point `codegen.py` at any existing project. It auto-detects the language, analyzes the codebase, then generates code that integrates seamlessly — using the actual base class/interface, package/module, imports, and conventions it discovers.
+
+Supports **Java, Python, TypeScript, Kotlin, Go** out of the box.
 
 ```bash
-python codegen.py -i eq.md -d ./out/ --codebase /path/to/java/project
+python codegen.py -i eq.md -d ./out/ --codebase /path/to/any/project
 ```
 
-The analyzer runs in three phases:
+The analyzer follows the Claude Code / DeepAgents pattern:
 
-1. **Type index** — Python regex-scans all `.java` files in ~1 second regardless of codebase size, building a full structural map (class names, kinds, extends/implements, methods) before any Claude call
-2. **3 parallel explorer subagents** — modelled on the Claude Code Ultra pattern, three Claude agents run simultaneously via `asyncio.gather()`:
-   - *Explorer 1* — finds the base interface / abstract class
-   - *Explorer 2* — finds a concrete implementation to use as a pattern
-   - *Explorer 3* — reads `CLAUDE.md`, `README`, `pom.xml` for build constraints and package conventions
-   Each explorer gets a focused slice of the type index and its own tool-use loop (`glob`, `read_file` with line ranges, `search_code`). No hardcoded naming patterns — exploration is guided by the equation being implemented.
-3. **Synthesizer** — merges the three reports into a `CodebaseProfile`. Has an `ask_followup_question` tool that presents specific options if critical info (base interface, package) is missing.
-4. **Verification pass** — a final Claude call checks the generated class for correct interface implementation, all abstract methods, required imports, and lifecycle contract compliance.
+1. **Language detection** — file extension counts determine the primary language automatically
+2. **Symbol index** — Python regex-scans all source files in ~1s; stays in memory, never pre-dumped into context
+3. **3 parallel Haiku explorers** — run simultaneously via `asyncio.gather()`, each with its own isolated context:
+   - *Explorer 1* — uses `query_symbols` tool to find base class / interface / protocol / ABC
+   - *Explorer 2* — finds a concrete production implementation to use as pattern
+   - *Explorer 3* — reads `CLAUDE.md`, `README`, build manifest for package + conventions
+4. **Stateless synthesizer** — merges the three reports in a single `_call_with_continuation` call (no tool loop). If a critical field is `UNCLEAR:`, the orchestrator asks you directly and re-synthesizes with full reports preserved — no data loss.
+5. **Verification pass** — checks base type, abstract methods, imports, package, no NaN/None
 
 ```bash
-# Full pipeline: generate equation and codebase-aware Java in one shot
-python eqgen.py | python codegen.py -d ./out/ --codebase /path/to/java/project
+# Full pipeline — any language
+python eqgen.py | python codegen.py -d ./out/ --codebase /path/to/project
 ```
 
-Example output for a codebase where signals implement `Computable` (not `AlphaExpression`):
-
+**Java example** (codebase uses `Computable`, not `AlphaExpression`):
 ```
-[Phase 1: Analyzing codebase at /path/to/project]
-[Type index: 142 classes | Launching 3 parallel explorers]
-  [Explorer-1 (Base Types)] read_file({"path":"src/.../Computable.java"})
-  [Explorer-2 (Implementations)] search_code({"directory":"src","pattern":"implements Computable"})
+[Language: java | Symbols: 142 (8 base types, 67 with inheritance) | Explorers: claude-haiku-... | Launching 3 in parallel]
+  [Explorer-1 (Base Types)] query_symbols({"kind":"interface"})
+  [Explorer-2 (Implementations)] query_symbols({"kind":"class","test":false})
   [Explorer-3 (Build + Conventions)] read_file({"path":"CLAUDE.md"})
   ...
-[Explorer-1 (Base Types): done]
-[Explorer-2 (Implementations): done]
-[Explorer-3 (Build + Conventions): done]
 [Synthesizer: merging reports]
 [Phase 2: Generating code]
-[Phase 3: Verifying output]
 [Verified ✓]
-[Written: ./out/Alpha_MySignal.java]
+[Written: ./out/VolumeWeightedMomentumSignal.java]   ← implements Computable, package com.trading.signals
 ```
 
-The generated class uses `implements Computable`, `package com.trading.signals`, and follows the exact pattern of existing implementations — ready to drop into the project.
-
-### Pipeline — equation → code in one shot
-
-```bash
-python eqgen.py | python codegen.py -d ./out/
-ls out/
-# AlphaExpression.java  Alpha_MyStrategy.java
+**Python example**:
+```
+[Language: python | Symbols: 38 (2 base types, 14 with inheritance) | Explorers: claude-haiku-... | Launching 3 in parallel]
+  ...
+[Written: ./out/trading/signals/volume_weighted_momentum.py]   ← class FooSignal(BaseSignal)
 ```
 
 Both scripts stream output to the terminal as Claude generates it, and use the same `config.yaml` and `.env` as the web backend.
