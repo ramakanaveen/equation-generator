@@ -937,7 +937,7 @@ async def analyze_codebase(
 # ---------------------------------------------------------------------------
 
 _VERIFY_SYSTEM = """\
-You are a code reviewer. Check the generated code against the codebase profile.
+You are a code reviewer. Check this single generated file against the codebase profile.
 
 Verify:
 1. Extends/implements the correct base type from the profile
@@ -948,8 +948,8 @@ Verify:
 6. No NaN or None returned unexpectedly — use 0.0 / 0 as the safe fallback
 
 If correct, output exactly: VERIFIED
-If there are issues, output the COMPLETE corrected code with === FILE: name.ext === delimiters.
-Fix ALL issues. Output code only."""
+If there are issues, output ONLY the complete corrected file content — plain code, no markdown fences,
+no === FILE: === delimiters. Just the corrected file content ready to write to disk."""
 
 
 async def verify_generated_code(
@@ -959,9 +959,10 @@ async def verify_generated_code(
     model: str,
     cfg,
 ) -> str | None:
+    """Verify a single file's content. Returns corrected code or None if verified."""
     messages = [{
         'role': 'user',
-        'content': f'## Codebase Profile\n\n{profile}\n\n## Generated Code\n\n{code}',
+        'content': f'## Codebase Profile\n\n{profile}\n\n## Generated File\n\n{code}',
     }]
     result = ''
     async for chunk in _call_with_continuation(_VERIFY_SYSTEM, messages, cfg, client, model):
