@@ -17,6 +17,7 @@ import asyncio
 import fnmatch
 import json
 import os
+import random
 import re
 import sys
 
@@ -107,6 +108,31 @@ def _explorer_model(model: str) -> str:
     if '@' in model:
         return 'claude-haiku-4-5@20251001'
     return 'claude-haiku-4-5-20251001'
+
+
+async def _api_call_with_backoff(fn, *args, max_retries: int = 5, **kwargs):
+    """
+    Wraps a blocking API call with exponential backoff + jitter on 429.
+    Follows Claude Code / DeepAgents pattern: retry rate limits, raise everything else.
+    """
+    for attempt in range(max_retries):
+        try:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+        except Exception as e:
+            # Catch 429 / resource-exhausted by checking status code or message
+            is_rate_limit = (
+                '429' in str(e) or
+                'rate limit' in str(e).lower() or
+                'resource exhausted' in str(e).lower() or
+                'too many requests' in str(e).lower()
+            )
+            if not is_rate_limit or attempt == max_retries - 1:
+                raise
+            wait = (2 ** attempt) * 5 + random.uniform(0, 2)  # 5s, 12s, 26s, 54s...
+            print(f'\n[rate limit — retrying in {wait:.1f}s (attempt {attempt + 1}/{max_retries})]',
+                  file=sys.stderr, flush=True)
+            await asyncio.sleep(wait)
+    raise RuntimeError('unreachable')
 
 # ---------------------------------------------------------------------------
 # Path safety
@@ -671,7 +697,7 @@ async def _run_explorer(
     for _ in range(MAX_TURNS_EXPLORER):
         if use_thinking:
             try:
-                response = await asyncio.to_thread(
+                response = await _api_call_with_backoff(
                     client.messages.create,
                     model=exp_model,
                     max_tokens=8192,
@@ -680,18 +706,21 @@ async def _run_explorer(
                     system=system,
                     messages=messages,
                 )
-            except Exception:
-                use_thinking = False
-                response = await asyncio.to_thread(
-                    client.messages.create,
-                    model=exp_model,
-                    max_tokens=cfg.max_tokens,
-                    tools=_EXPLORER_TOOLS,
-                    system=system,
-                    messages=messages,
-                )
+            except Exception as e:
+                if 'thinking' in str(e).lower() or 'unsupported' in str(e).lower():
+                    use_thinking = False
+                    response = await _api_call_with_backoff(
+                        client.messages.create,
+                        model=exp_model,
+                        max_tokens=cfg.max_tokens,
+                        tools=_EXPLORER_TOOLS,
+                        system=system,
+                        messages=messages,
+                    )
+                else:
+                    raise
         else:
-            response = await asyncio.to_thread(
+            response = await _api_call_with_backoff(
                 client.messages.create,
                 model=exp_model,
                 max_tokens=cfg.max_tokens,
