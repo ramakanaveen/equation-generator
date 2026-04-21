@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 
 from generator import _call_with_continuation
 
@@ -91,9 +92,18 @@ async def _run_codegen_loop(system, user_msg, java_dir, cfg, client, model):
         break  # end_turn — all files written
 
 
+def _strip_fences(content: str) -> str:
+    """Safety net: remove markdown code fences if LLM wrapped content despite tool instructions."""
+    content = content.strip()
+    if content.startswith('```'):
+        content = re.sub(r'^```[^\n]*\n?', '', content)
+        content = re.sub(r'\n?```\s*$', '', content)
+    return content.strip()
+
+
 def _write_one_file(path: str, content: str) -> None:
     with open(path, 'w', encoding='utf-8') as f:
-        f.write(content)
+        f.write(_strip_fences(content))
 
 
 async def run_coder(code_policy_text, queue, version, version_mgr, cfg, client, model, stop_event):
