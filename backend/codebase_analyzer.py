@@ -621,7 +621,6 @@ You are Explorer 1. Find the base class, interface, protocol, or abstract type t
 computation/signal classes should extend or implement in this codebase.
 
 Language: {lang}
-Equation/task being implemented: {equation_text}
 
 Strategy:
 1. Call query_symbols(kind="interface") and query_symbols(kind="abstract class") — look for \
@@ -646,7 +645,6 @@ You are Explorer 2. Find one concrete implementation that shows the exact patter
 new classes should follow in this codebase.
 
 Language: {lang}
-Equation/task being implemented: {equation_text}
 
 Strategy:
 1. Call query_symbols(kind="class", test=false) to find production implementations
@@ -690,7 +688,6 @@ You are the Synthesizer. Three parallel explorer subagents have reported back. \
 Merge their findings into a single coherent CodebaseProfile.
 
 Language: {lang}
-Task to implement: {equation_text}
 
 {clarification_note}\
 Output this exact format (all sections required):
@@ -852,7 +849,6 @@ def _extract_candidates_for(field: str, reports: list[str]) -> list[str]:
 
 async def _synthesize(
     reports: list[str],
-    equation_text: str,
     lang: str,
     client,
     model: str,
@@ -863,6 +859,7 @@ async def _synthesize(
     """
     Stateless synthesis — no tool loop.
     Follows Claude Code pattern: parent synthesizes subagent outputs in a single call.
+    Profile is pure codebase knowledge — equation-independent and cacheable.
     If ambiguous, synthesizer writes UNCLEAR: in that section; orchestrator handles it.
     """
     r1, r2, r3 = reports
@@ -880,7 +877,6 @@ async def _synthesize(
 
     system = _SYSTEM_SYNTHESIZER.format(
         lang=lang,
-        equation_text=equation_text,
         clarification_note=f'User clarifications:\n{clarification_note}\n\n' if clarification_note else '',
     )
     messages = [{'role': 'user', 'content': user_content}]
@@ -897,7 +893,6 @@ async def _synthesize(
 
 async def _synthesize_with_clarification(
     reports: list[str],
-    equation_text: str,
     lang: str,
     client,
     model: str,
@@ -909,13 +904,12 @@ async def _synthesize_with_clarification(
     Orchestrator-level clarification loop (Claude Code parent loop pattern).
     Full explorer reports are always preserved and re-sent on retry — no data loss.
     """
-    profile = await _synthesize(reports, equation_text, lang, client, model, cfg, progress_cb=progress_cb)
+    profile = await _synthesize(reports, lang, client, model, cfg, progress_cb=progress_cb)
 
     unclear = _unclear_sections(profile)
     if not unclear:
         return profile
 
-    # Ask user about each unclear field (orchestrator handles this, not the LLM)
     clarifications = []
     for field in unclear:
         candidates = _extract_candidates_for(field, reports)
@@ -927,7 +921,7 @@ async def _synthesize_with_clarification(
 
     clarification_note = '\n'.join(clarifications)
     return await _synthesize(
-        reports, equation_text, lang, client, model, cfg,
+        reports, lang, client, model, cfg,
         clarification_note=clarification_note,
         progress_cb=progress_cb,
     )
@@ -938,15 +932,17 @@ async def _synthesize_with_clarification(
 
 async def analyze_codebase(
     root_path: str,
-    equation_text: str,
     client,
     model: str,
     cfg,
     progress_cb=None,
-) -> str:
+    equation_text: str = '',  # kept for backwards compat, no longer used in prompts
+) -> tuple[str, dict]:
     """
     Analyze any language codebase using 3 parallel explorer subagents + 1 synthesizer.
-    Language is auto-detected. Returns CodebaseProfile markdown string.
+    Returns (CodebaseProfile, symbol_index).
+    Profile is equation-independent — same profile reused for any equation on this codebase.
+    symbol_index is returned for use as a live lookup tool during code generation.
     """
     root_path = os.path.realpath(root_path)
     if not os.path.isdir(root_path):
@@ -955,17 +951,17 @@ async def analyze_codebase(
     lang = _detect_language(root_path)
     extensions = _extensions_for(lang)
 
-    # Cache check — OpenCode pattern: content hash, project-local, no git needed
+    # Always build symbol_index — fast (~1s), needed for generation tools
+    symbol_index = await asyncio.to_thread(_build_symbol_index, root_path, lang)
+
+    # Cache check — content hash, project-local, no git needed (OpenCode pattern)
     cached = await asyncio.to_thread(_load_cached_profile, root_path, extensions)
     if cached:
         if progress_cb:
             progress_cb(f'[Language: {lang} | Profile cache hit — skipping analysis]\n')
-        return cached
+        return cached, symbol_index
 
-    symbol_index, bootstrap = await asyncio.gather(
-        asyncio.to_thread(_build_symbol_index, root_path, lang),
-        asyncio.to_thread(_bootstrap_context, root_path, lang),
-    )
+    bootstrap = await asyncio.to_thread(_bootstrap_context, root_path, lang)
 
     n_base = sum(1 for e in symbol_index.values() if e['kind'] in ('interface', 'abstract class'))
     n_with_parents = sum(1 for e in symbol_index.values() if e['extends'] or e['implements'])
@@ -981,9 +977,7 @@ async def analyze_codebase(
     r1, r2, r3 = await asyncio.gather(
         _run_explorer(
             name='Explorer-1 (Base Types)',
-            system=_SYSTEM_EXPLORER_1.format(
-                lang=lang, equation_text=equation_text, max_files=MAX_FILES_PER_EXPLORER,
-            ),
+            system=_SYSTEM_EXPLORER_1.format(lang=lang, max_files=MAX_FILES_PER_EXPLORER),
             initial_msg=(
                 f'Language: {lang}. Codebase has {len(symbol_index)} symbols '
                 f'({n_base} base types, {n_with_parents} with inheritance). '
@@ -995,9 +989,7 @@ async def analyze_codebase(
         ),
         _run_explorer(
             name='Explorer-2 (Implementations)',
-            system=_SYSTEM_EXPLORER_2.format(
-                lang=lang, equation_text=equation_text, max_files=MAX_FILES_PER_EXPLORER,
-            ),
+            system=_SYSTEM_EXPLORER_2.format(lang=lang, max_files=MAX_FILES_PER_EXPLORER),
             initial_msg=(
                 f'Language: {lang}. Codebase has {len(symbol_index)} symbols. '
                 f'Use query_symbols(kind="class", test=false) to find production implementations.'
@@ -1014,12 +1006,12 @@ async def analyze_codebase(
         ),
     )
 
-    profile = await _synthesize_with_clarification([r1, r2, r3], equation_text, lang, client, model, cfg, progress_cb)
+    profile = await _synthesize_with_clarification([r1, r2, r3], lang, client, model, cfg, progress_cb)
 
     # Save to project-local cache for future runs
     await asyncio.to_thread(_save_cached_profile, root_path, extensions, profile)
 
-    return profile
+    return profile, symbol_index
 
 # ---------------------------------------------------------------------------
 # Verification

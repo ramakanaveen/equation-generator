@@ -58,6 +58,7 @@ async def main():
     out_dir = args.dir or os.path.join(os.getcwd(), "out")
     os.makedirs(out_dir, exist_ok=True)
 
+    symbol_index = None
     if args.codebase:
         # Codebase-aware mode: built-in system prompt, no code.md needed.
         # Equation = what to implement. Codebase profile = how and where.
@@ -68,9 +69,8 @@ async def main():
             sys.exit(1)
 
         print(f"\n[Phase 1: Analyzing codebase at {cb_path}]", file=sys.stderr)
-        profile = await analyze_codebase(
+        profile, symbol_index = await analyze_codebase(
             root_path=cb_path,
-            equation_text=equation_text,
             client=client, model=model, cfg=cfg,
             progress_cb=lambda t: print(t, end="", flush=True, file=sys.stderr),
         )
@@ -88,7 +88,13 @@ async def main():
         user_msg = f"Generate code for this alpha equation:\n\n{equation_text}"
         print("[Generating code]\n", file=sys.stderr)
 
-    async for _, filename, _ in _run_codegen_loop(system, user_msg, out_dir, cfg, client, model):
+    cb_root = os.path.realpath(args.codebase) if args.codebase else None
+    cb_index = symbol_index if args.codebase else None
+
+    async for _, filename, _ in _run_codegen_loop(
+        system, user_msg, out_dir, cfg, client, model,
+        codebase_root=cb_root, symbol_index=cb_index,
+    ):
         print(f"[Written: {os.path.join(out_dir, filename)}]", file=sys.stderr)
 
     print()
