@@ -15,12 +15,78 @@ Context strategy (Claude Code / DeepAgents / Cline pattern):
 """
 import asyncio
 import fnmatch
+import hashlib
 import json
 import os
 import re
 import sys
 
 from generator import _call_with_continuation, api_call_with_backoff
+
+# ---------------------------------------------------------------------------
+# Profile cache  (OpenCode pattern: content-hash, project-local, no git needed)
+# ---------------------------------------------------------------------------
+
+_CACHE_DIR_NAME = '.codegen-cache'
+_CACHE_FILE = 'profile.json'
+
+
+def _cache_dir(root_path: str) -> str:
+    return os.path.join(root_path, _CACHE_DIR_NAME)
+
+
+def _content_hash(root_path: str, extensions: tuple) -> str:
+    """
+    SHA256 of all source file paths + contents.
+    No git dependency — works on any filesystem.
+    Reliable: content change always changes the hash (unlike mtimes).
+    OpenCode uses the same file-content-hash approach.
+    """
+    hasher = hashlib.sha256()
+    skip = _COMMON_SKIP_DIRS | {_CACHE_DIR_NAME}
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        dirnames[:] = sorted(d for d in dirnames if d not in skip)
+        for fname in sorted(filenames):
+            if any(fname.endswith(ext) for ext in extensions):
+                fpath = os.path.join(dirpath, fname)
+                try:
+                    rel = os.path.relpath(fpath, root_path)
+                    hasher.update(rel.encode())
+                    with open(fpath, 'rb') as f:
+                        hasher.update(f.read())
+                except OSError:
+                    pass
+    return hasher.hexdigest()[:24]
+
+
+def _load_cached_profile(root_path: str, extensions: tuple) -> str | None:
+    cache_file = os.path.join(_cache_dir(root_path), _CACHE_FILE)
+    if not os.path.isfile(cache_file):
+        return None
+    try:
+        data = json.loads(open(cache_file, encoding='utf-8').read())
+        if data.get('key') == _content_hash(root_path, extensions):
+            return data.get('profile')
+    except Exception:
+        pass
+    return None
+
+
+def _save_cached_profile(root_path: str, extensions: tuple, profile: str) -> None:
+    cache_path = _cache_dir(root_path)
+    os.makedirs(cache_path, exist_ok=True)
+    # Auto-add to .gitignore if inside a git repo
+    gitignore = os.path.join(root_path, '.gitignore')
+    try:
+        existing = open(gitignore).read() if os.path.isfile(gitignore) else ''
+        if _CACHE_DIR_NAME not in existing:
+            with open(gitignore, 'a') as f:
+                f.write(f'\n{_CACHE_DIR_NAME}/\n')
+    except OSError:
+        pass
+    cache_file = os.path.join(cache_path, _CACHE_FILE)
+    with open(cache_file, 'w', encoding='utf-8') as f:
+        json.dump({'key': _content_hash(root_path, extensions), 'profile': profile}, f)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -673,7 +739,7 @@ async def _run_explorer(
     for _ in range(MAX_TURNS_EXPLORER):
         if use_thinking:
             try:
-                response = await _api_call_with_backoff(
+                response = await api_call_with_backoff(
                     client.messages.create,
                     model=exp_model,
                     max_tokens=8192,
@@ -685,7 +751,7 @@ async def _run_explorer(
             except Exception as e:
                 if 'thinking' in str(e).lower() or 'unsupported' in str(e).lower():
                     use_thinking = False
-                    response = await _api_call_with_backoff(
+                    response = await api_call_with_backoff(
                         client.messages.create,
                         model=exp_model,
                         max_tokens=cfg.max_tokens,
@@ -696,7 +762,7 @@ async def _run_explorer(
                 else:
                     raise
         else:
-            response = await _api_call_with_backoff(
+            response = await api_call_with_backoff(
                 client.messages.create,
                 model=exp_model,
                 max_tokens=cfg.max_tokens,
@@ -882,6 +948,14 @@ async def analyze_codebase(
         raise ValueError(f'Not a directory: {root_path}')
 
     lang = _detect_language(root_path)
+    extensions = _extensions_for(lang)
+
+    # Cache check — OpenCode pattern: content hash, project-local, no git needed
+    cached = await asyncio.to_thread(_load_cached_profile, root_path, extensions)
+    if cached:
+        if progress_cb:
+            progress_cb(f'[Language: {lang} | Profile cache hit — skipping analysis]\n')
+        return cached
 
     symbol_index, bootstrap = await asyncio.gather(
         asyncio.to_thread(_build_symbol_index, root_path, lang),
@@ -935,7 +1009,12 @@ async def analyze_codebase(
         ),
     )
 
-    return await _synthesize_with_clarification([r1, r2, r3], equation_text, lang, client, model, cfg, progress_cb)
+    profile = await _synthesize_with_clarification([r1, r2, r3], equation_text, lang, client, model, cfg, progress_cb)
+
+    # Save to project-local cache for future runs
+    await asyncio.to_thread(_save_cached_profile, root_path, extensions, profile)
+
+    return profile
 
 # ---------------------------------------------------------------------------
 # Verification

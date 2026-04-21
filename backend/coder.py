@@ -27,6 +27,26 @@ _WRITE_FILE_TOOL = {
     },
 }
 
+_READ_FILE_TOOL = {
+    'name': 'read_file',
+    'description': (
+        'Read a file you previously wrote to verify its content is correct. '
+        'If you find issues, call write_file again with the corrected content.'
+    ),
+    'input_schema': {
+        'type': 'object',
+        'properties': {
+            'filename': {
+                'type': 'string',
+                'description': 'Filename to read (same name used in write_file)',
+            },
+        },
+        'required': ['filename'],
+    },
+}
+
+_CODEGEN_TOOLS = [_WRITE_FILE_TOOL, _READ_FILE_TOOL]
+
 _WRITE_FILE_INSTRUCTION = """
 
 ---
@@ -35,17 +55,19 @@ _WRITE_FILE_INSTRUCTION = """
 Use the write_file tool to output each file — one tool call per file.
 Do NOT use === FILE: === text delimiters.
 Write AlphaExpression.java first (if applicable), then one file per equation.
+After writing each file, use read_file to verify the content is correct.
+If you find issues, call write_file again with the corrected content.
 """
 
-_MAX_CODEGEN_TURNS = 40  # generous guard for large batches
+_MAX_CODEGEN_TURNS = 60  # generous — includes read_file + correction turns
 
 
-async def _run_codegen_loop(system, user_msg, java_dir, cfg, client, model):
+async def _run_codegen_loop(system, user_msg, out_dir, cfg, client, model):
     """
-    Tool-use loop for Ph2 code generation.
-    Yields ('file', filename, count_so_far) for each file written.
-    Follows Claude Code / DeepAgents pattern: write_file tool, one file per call.
-    Handles max_tokens inline — no delimiter parsing, no fragility at scale.
+    Tool-use loop for Ph2 code generation (Claude Code pattern).
+    write_file: writes file to disk, yields ('file', filename, count).
+    read_file:  reads back what was written so LLM can self-verify inline.
+    No separate verifier call — LLM decides correctness within this loop.
     """
     messages = [{'role': 'user', 'content': user_msg}]
     count = 0
@@ -55,7 +77,7 @@ async def _run_codegen_loop(system, user_msg, java_dir, cfg, client, model):
             client.messages.create,
             model=model,
             max_tokens=cfg.max_tokens,
-            tools=[_WRITE_FILE_TOOL],
+            tools=_CODEGEN_TOOLS,
             system=system,
             messages=messages,
         )
@@ -66,20 +88,38 @@ async def _run_codegen_loop(system, user_msg, java_dir, cfg, client, model):
             messages.append({'role': 'assistant', 'content': response.content})
             results = []
             for tu in tool_uses:
-                filename = tu.input.get('filename', '').strip()
-                content = tu.input.get('content', '').strip()
-                if filename and content:
-                    path = os.path.join(java_dir, filename)
-                    parent = os.path.dirname(path)
-                    if parent:
-                        os.makedirs(parent, exist_ok=True)
-                    await asyncio.to_thread(_write_one_file, path, content)
-                    count += 1
-                    yield ('file', filename, count)
+                if tu.name == 'write_file':
+                    filename = tu.input.get('filename', '').strip()
+                    content = tu.input.get('content', '').strip()
+                    if filename and content:
+                        path = os.path.join(out_dir, filename)
+                        parent = os.path.dirname(path)
+                        if parent:
+                            os.makedirs(parent, exist_ok=True)
+                        await asyncio.to_thread(_write_one_file, path, content)
+                        count += 1
+                        yield ('file', filename, count)
+                        result_text = f'Written: {filename}'
+                    else:
+                        result_text = 'Error: filename and content are required'
+
+                elif tu.name == 'read_file':
+                    filename = tu.input.get('filename', '').strip()
+                    path = os.path.join(out_dir, filename) if filename else ''
+                    if filename and os.path.isfile(path):
+                        try:
+                            result_text = open(path, encoding='utf-8').read()
+                        except OSError as e:
+                            result_text = f'Error reading {filename}: {e}'
+                    else:
+                        result_text = f'File not found: {filename}'
+                else:
+                    result_text = f'Unknown tool: {tu.name}'
+
                 results.append({
                     'type': 'tool_result',
                     'tool_use_id': tu.id,
-                    'content': f'Written: {filename}' if filename else 'Error: missing filename',
+                    'content': result_text,
                 })
             messages.append({'role': 'user', 'content': results})
             continue
@@ -89,7 +129,7 @@ async def _run_codegen_loop(system, user_msg, java_dir, cfg, client, model):
             messages.append({'role': 'user', 'content': 'Continue writing the remaining files using write_file.'})
             continue
 
-        break  # end_turn — all files written
+        break  # end_turn — all files written and verified
 
 
 def _strip_fences(content: str) -> str:
@@ -110,8 +150,6 @@ async def run_coder(code_policy_text, queue, version, version_mgr, cfg, client, 
     """
     Ph2 loop. Yields SSE-ready dicts.
     Drains the queue. Exits when queue is empty AND stop_event is set.
-    All blocking I/O is offloaded to a thread so the event loop stays free.
-    Safe to restart: recovers orphaned processing items and resumes from existing file count.
     """
     recovered = await asyncio.to_thread(queue.recover_processing)
     if recovered:
@@ -121,7 +159,6 @@ async def run_coder(code_policy_text, queue, version, version_mgr, cfg, client, 
     coded_total = meta.java_file_count
     java_dir = version_mgr.java_dir(version)
 
-    # Append write_file instruction at runtime — code.md is never modified
     system = code_policy_text + _WRITE_FILE_INSTRUCTION
 
     while True:
