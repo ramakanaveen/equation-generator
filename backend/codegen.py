@@ -13,6 +13,7 @@ import argparse
 from config import cfg
 from providers import AnthropicProvider, VertexProvider
 from coder import _WRITE_FILE_TOOL, _WRITE_FILE_INSTRUCTION, _write_one_file
+from generator import api_call_with_backoff
 
 POLICY_DIR = os.path.join(os.path.dirname(__file__), "policy")
 _MAX_CODEGEN_TURNS = 40
@@ -29,7 +30,7 @@ async def _run_codegen_loop(system, user_msg, out_dir, profile, client, model, c
     messages = [{'role': 'user', 'content': user_msg}]
 
     for _ in range(_MAX_CODEGEN_TURNS):
-        response = await asyncio.to_thread(
+        response = await api_call_with_backoff(
             client.messages.create,
             model=model,
             max_tokens=cfg.max_tokens,

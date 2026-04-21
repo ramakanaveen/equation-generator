@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 
-from generator import _call_with_continuation
+from generator import _call_with_continuation, api_call_with_backoff
 
 
 _WRITE_FILE_TOOL = {
@@ -51,7 +51,7 @@ async def _run_codegen_loop(system, user_msg, java_dir, cfg, client, model):
     count = 0
 
     for _ in range(_MAX_CODEGEN_TURNS):
-        response = await asyncio.to_thread(
+        response = await api_call_with_backoff(
             client.messages.create,
             model=model,
             max_tokens=cfg.max_tokens,
