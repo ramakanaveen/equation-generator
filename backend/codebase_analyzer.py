@@ -416,16 +416,18 @@ def _tool_read_file(inputs: dict, root: str, counter: list) -> str:
         return f'[Not a file: {inputs["path"]!r}]'
     start = inputs.get('start_line')
     end = inputs.get('end_line')
-    max_lines = int(inputs.get('max_lines', 200))
+    max_lines = inputs.get('max_lines')  # only applied when LLM explicitly requests it
     try:
         with open(path, encoding='utf-8', errors='replace') as f:
             lines = f.readlines()
         if start is not None:
             s = max(0, int(start) - 1)
-            e = int(end) if end is not None else s + max_lines
+            e = int(end) if end is not None else (s + int(max_lines)) if max_lines else len(lines)
             result = ''.join(lines[s:e])
+        elif max_lines is not None:
+            result = ''.join(lines[:int(max_lines)])
         else:
-            result = ''.join(lines[:max_lines])
+            result = ''.join(lines)  # full file — capped by MAX_TOOL_RESULT_CHARS below
         counter[0] += 1
         return _cap_result(result, 'use start_line/end_line to read specific sections')
     except (IOError, OSError) as ex:
@@ -580,14 +582,17 @@ _EXPLORER_TOOLS = [
     },
     {
         'name': 'read_file',
-        'description': 'Read a file. Use start_line/end_line for large files.',
+        'description': (
+            'Read a file. Returns the full file by default. '
+            'Use start_line/end_line to read a specific section of a large file.'
+        ),
         'input_schema': {
             'type': 'object',
             'properties': {
                 'path': {'type': 'string'},
-                'start_line': {'type': 'integer'},
-                'end_line': {'type': 'integer'},
-                'max_lines': {'type': 'integer', 'default': 200},
+                'start_line': {'type': 'integer', 'description': 'First line to read (1-based)'},
+                'end_line': {'type': 'integer', 'description': 'Last line to read (inclusive)'},
+                'max_lines': {'type': 'integer', 'description': 'Limit lines returned (omit for full file)'},
             },
             'required': ['path'],
         },
