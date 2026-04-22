@@ -39,6 +39,10 @@ async def main():
         "--codebase", "-c", default=None,
         help="Path to local project root for codebase-aware generation (any language)",
     )
+    parser.add_argument(
+        "--deep", "-D", action="store_true",
+        help="Use full 3-explorer LLM analysis instead of Python orientation (slower, more thorough)",
+    )
     args = parser.parse_args()
 
     if args.input:
@@ -68,12 +72,22 @@ async def main():
             print(f"Error: --codebase path is not a directory: {args.codebase}", file=sys.stderr)
             sys.exit(1)
 
-        print(f"\n[Phase 1: Analyzing codebase at {cb_path}]", file=sys.stderr)
-        profile, symbol_index, _ = await analyze_codebase(
-            root_path=cb_path,
-            client=client, model=model, cfg=cfg,
-            progress_cb=lambda t: print(t, end="", flush=True, file=sys.stderr),
-        )
+        mode = "deep (3-explorer LLM)" if args.deep else "Python orientation"
+        print(f"\n[Phase 1: Analyzing codebase at {cb_path}] [{mode}]", file=sys.stderr)
+
+        if args.deep:
+            from codebase_analyzer import analyze_codebase_deep
+            profile, symbol_index, _ = await analyze_codebase_deep(
+                root_path=cb_path,
+                client=client, model=model, cfg=cfg,
+                progress_cb=lambda t: print(t, end="", flush=True, file=sys.stderr),
+            )
+        else:
+            profile, symbol_index, _ = await analyze_codebase(
+                root_path=cb_path,
+                client=client, model=model, cfg=cfg,
+                progress_cb=lambda t: print(t, end="", flush=True, file=sys.stderr),
+            )
 
         # System prompt = codegen.md policy + codebase profile
         system = f"{_load_codegen_policy()}\n\n## Codebase Profile\n\n{profile}"

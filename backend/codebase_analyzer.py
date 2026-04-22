@@ -936,6 +936,53 @@ async def _synthesize_with_clarification(
     )
 
 # ---------------------------------------------------------------------------
+# Python-generated orientation  (0 API calls — Claude Code CLAUDE.md pattern)
+# ---------------------------------------------------------------------------
+
+def _build_orientation(root_path: str, lang: str, symbol_index: dict, bootstrap: str) -> str:
+    """
+    Build a minimal orientation from symbol_index + bootstrap files.
+    Pure Python, 0 API calls. Acts like CLAUDE.md — gives the generation LLM
+    a starting point so the equation guides targeted exploration, not broad discovery.
+
+    Fan-in analysis: count how many production classes extend/implement each type.
+    The type with highest fan-in is almost always the correct base type.
+    """
+    n_total = len(symbol_index)
+    n_base = sum(1 for e in symbol_index.values() if e['kind'] in ('interface', 'abstract class'))
+    n_with_parents = sum(1 for e in symbol_index.values() if e['extends'] or e['implements'])
+
+    # Fan-in: count production-class references to each type name
+    fan_in: dict[str, int] = {}
+    for entry in symbol_index.values():
+        if entry.get('test'):
+            continue
+        for name in (entry.get('extends', []) + entry.get('implements', [])):
+            simple = name.split('.')[-1].split('<')[0].strip()
+            if simple:
+                fan_in[simple] = fan_in.get(simple, 0) + 1
+
+    top = sorted(fan_in.items(), key=lambda x: -x[1])[:5]
+    candidates_str = '\n'.join(
+        f'  {i + 1}. {name}: {count} production implementations'
+        for i, (name, count) in enumerate(top)
+    ) or '  (none detected — use query_symbols to explore)'
+
+    return (
+        f'Language: {lang}\n'
+        f'Codebase: {n_total} symbols ({n_base} base types, {n_with_parents} with inheritance)\n'
+        f'\n'
+        f'## Likely Base Type Candidates (by production fan-in)\n'
+        f'{candidates_str}\n'
+        f'\n'
+        f'Use query_symbols to confirm the base type, then read_file to inspect its signature.\n'
+        f'\n'
+        f'## Bootstrap\n'
+        f'{bootstrap[:3000]}'
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main public API
 # ---------------------------------------------------------------------------
 
@@ -945,13 +992,14 @@ async def analyze_codebase(
     model: str,
     cfg,
     progress_cb=None,
-    equation_text: str = '',  # kept for backwards compat, no longer used in prompts
+    equation_text: str = '',  # kept for backwards compat
 ):
     """
-    Analyze any language codebase using 3 parallel explorer subagents + 1 synthesizer.
-    Returns (CodebaseProfile, symbol_index).
-    Profile is equation-independent — same profile reused for any equation on this codebase.
-    symbol_index is returned for use as a live lookup tool during code generation.
+    Build a Python-generated orientation (0 API calls). Matches Claude Code / Cline pattern:
+    no separate exploration phase — the generation loop explores only what the equation needs.
+    Returns (orientation, symbol_index, UsageTracker).
+
+    Use --deep (analyze_codebase_deep) for the full 3-explorer LLM path.
     """
     root_path = os.path.realpath(root_path)
     if not os.path.isdir(root_path):
@@ -960,10 +1008,60 @@ async def analyze_codebase(
     lang = _detect_language(root_path)
     extensions = _extensions_for(lang)
 
-    # Always build symbol_index — fast (~1s), needed for generation tools
+    # Always build symbol_index — fast (~1s), needed as live tool during generation
     symbol_index = await asyncio.to_thread(_build_symbol_index, root_path, lang)
 
-    # Cache check — content hash, project-local, no git needed (OpenCode pattern)
+    # Cache check — content hash, project-local (OpenCode pattern)
+    cached = await asyncio.to_thread(_load_cached_profile, root_path, extensions)
+    if cached:
+        if progress_cb:
+            progress_cb(
+                f'[Language: {lang} | Orientation cache hit]\n'
+                f'[Phase 1: Codebase Analysis] 0 calls · (cache hit)\n'
+            )
+        return cached, symbol_index, UsageTracker()
+
+    bootstrap = await asyncio.to_thread(_bootstrap_context, root_path, lang)
+    orientation = await asyncio.to_thread(
+        _build_orientation, root_path, lang, symbol_index, bootstrap
+    )
+
+    n_base = sum(1 for e in symbol_index.values() if e['kind'] in ('interface', 'abstract class'))
+    n_with_parents = sum(1 for e in symbol_index.values() if e['extends'] or e['implements'])
+    if progress_cb:
+        progress_cb(
+            f'[Language: {lang} | Symbols: {len(symbol_index)} '
+            f'({n_base} base types, {n_with_parents} with inheritance) | '
+            f'Python orientation built (0 API calls)]\n'
+            f'[Phase 1: Codebase Analysis] 0 calls · orientation built from symbol index\n'
+        )
+
+    await asyncio.to_thread(_save_cached_profile, root_path, extensions, orientation)
+    return orientation, symbol_index, UsageTracker()
+
+
+async def analyze_codebase_deep(
+    root_path: str,
+    client,
+    model: str,
+    cfg,
+    progress_cb=None,
+):
+    """
+    Full 3-explorer + synthesizer LLM analysis (the original approach).
+    Use via --deep flag when the Python orientation is ambiguous or a comprehensive
+    LLM-synthesized profile is needed.
+    Returns (profile, symbol_index, tracker).
+    """
+    root_path = os.path.realpath(root_path)
+    if not os.path.isdir(root_path):
+        raise ValueError(f'Not a directory: {root_path}')
+
+    lang = _detect_language(root_path)
+    extensions = _extensions_for(lang)
+
+    symbol_index = await asyncio.to_thread(_build_symbol_index, root_path, lang)
+
     cached = await asyncio.to_thread(_load_cached_profile, root_path, extensions)
     if cached:
         if progress_cb:
@@ -1028,11 +1126,9 @@ async def analyze_codebase(
     )
 
     if progress_cb:
-        progress_cb(f'{tracker.summary("Phase 1: Codebase Analysis")}\n')
+        progress_cb(f'{tracker.summary("Phase 1: Codebase Analysis (deep)")}\n')
 
-    # Save to project-local cache for future runs
     await asyncio.to_thread(_save_cached_profile, root_path, extensions, profile)
-
     return profile, symbol_index, tracker
 
 # ---------------------------------------------------------------------------

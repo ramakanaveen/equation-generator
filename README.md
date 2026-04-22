@@ -180,17 +180,14 @@ Supports **Java, Python, TypeScript, Kotlin, Go** out of the box.
 python codegen.py -i eq.md -d ./out/ --codebase /path/to/any/project
 ```
 
-The analyzer follows the Claude Code / DeepAgents pattern:
+The analyzer follows the Claude Code / Cline pattern — no separate LLM exploration phase:
 
 1. **Language detection** — file extension counts determine the primary language automatically
 2. **Symbol index** — Python regex-scans all source files in ~1s; stays in memory, never pre-dumped into context
-3. **3 parallel Haiku explorers** — run simultaneously via `asyncio.gather()`, each with its own isolated context:
-   - *Explorer 1* — uses `query_symbols` tool to find base class / interface / protocol / ABC
-   - *Explorer 2* — finds a concrete production implementation to use as pattern
-   - *Explorer 3* — reads `CLAUDE.md`, `README`, build manifest for package + conventions
-4. **Stateless synthesizer** — merges the three reports in a single `_call_with_continuation` call (no tool loop). If a critical field is `UNCLEAR:`, the orchestrator asks you directly and re-synthesizes with full reports preserved — no data loss.
-5. **Adaptive generation** — LLM has live access to `read_file`, `search_code`, and `query_symbols` during code generation, not just the profile. Context is compacted automatically when it grows large (Claude Code `/compact` pattern).
-6. **Profile cache** — SHA256 content hash stored in `<codebase>/.codegen-cache/`. Any file change invalidates it; cache hit skips all analysis (0 API calls for Phase 1).
+3. **Python orientation (0 API calls)** — fan-in analysis identifies the most-implemented base type candidates; bootstrap files (CLAUDE.md, README, build manifest) are read directly. This acts like a CLAUDE.md briefing — scoped facts, not broad exploration.
+4. **Task-guided generation** — the LLM receives the equation + orientation + live tools. The equation acts as the exploration compass: `query_symbols` once to confirm the base type, `read_file` once to inspect it, then `write_file`. ~4 targeted API calls per file.
+5. **Orientation cache** — SHA256 content hash stored in `<codebase>/.codegen-cache/`. Any file change invalidates it; cache hit skips all analysis (0 API calls for Phase 1).
+6. **`--deep` mode** — for complex codebases, `--deep` runs the full 3-explorer LLM analysis.
 
 ```bash
 # Full pipeline — any language

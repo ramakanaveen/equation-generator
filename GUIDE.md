@@ -132,32 +132,28 @@ python codegen.py -i eq.md -d ./out/ --codebase /path/to/your/project
 
 ```
 1. Language detected from file extension counts
-2. Symbol index built in Python (~1s, all source files) — kept in memory, never dumped to context
-3. Three Haiku subagents run in parallel (cheap + fast):
-     Explorer 1 — calls query_symbols to find the base class / interface / protocol
-     Explorer 2 — calls query_symbols(test=false) to find a production implementation pattern
-     Explorer 3 — reads CLAUDE.md, README, build manifest for package + rules
-   Each explorer has its own isolated context; only its final report flows out.
-4. Stateless synthesizer — single _call_with_continuation call merges the 3 reports.
-   If a critical field is UNCLEAR:, the orchestrator asks you directly, then
-   re-synthesizes with the full original reports preserved (lossless).
-5. Code generated using codegen.md policy + CodebaseProfile — LLM has live access to
-   read_file, search_code, and query_symbols during generation (not just the profile).
+2. Symbol index built in Python (~1s) — scans all source files, kept in memory
+3. Phase 1 orientation built in Python (0 API calls):
+     - Fan-in analysis: counts how many production classes extend/implement each type
+       The most-implemented type is almost always the correct base type
+     - Bootstrap files read: CLAUDE.md, README, build manifest
+     - Result: a scoped briefing (like CLAUDE.md) with base type candidates + context
+4. Phase 2 generation — the equation acts as the exploration compass:
+     - LLM calls query_symbols once to confirm the base type
+     - Calls read_file once on the confirmed base type to see its signature
+     - Writes the file with write_file
+     - Verifies with read_file
+     Total: ~4 targeted API calls guided by the specific equation
 ```
+
+This follows the Claude Code / Cline pattern: no pre-analysis LLM exploration — the task
+description guides what to look for. Only what the equation actually needs gets looked up.
 
 **Progress output:**
 
 ```
-[Language: python | Symbols: 42 (3 base types, 18 with inheritance) | Explorers: claude-haiku-... | Launching 3 in parallel]
-  [Explorer-1 (Base Types)] query_symbols({"kind":"abstract class"})
-  [Explorer-2 (Implementations)] query_symbols({"kind":"class","test":false})
-  [Explorer-3 (Build + Conventions)] read_file({"path":"CLAUDE.md"})
-  ...
-[Explorer-1 (Base Types): done]
-[Explorer-2 (Implementations): done]
-[Explorer-3 (Build + Conventions): done]
-[Synthesizer: merging reports]
-[Phase 1: Codebase Analysis] 7 calls · 45,230 in + 8,120 out = 53,350 tokens
+[Language: python | Symbols: 42 (3 base types, 18 with inheritance) | Python orientation built (0 API calls)]
+[Phase 1: Codebase Analysis] 0 calls · orientation built from symbol index
 
 [Phase 2: Generating code]
 [Written: ./out/volume_weighted_momentum_alpha.py]
@@ -168,9 +164,18 @@ python codegen.py -i eq.md -d ./out/ --codebase /path/to/your/project
 On a repeated run (same codebase, any equation):
 
 ```
-[Language: python | Profile cache hit — skipping analysis]
+[Language: python | Orientation cache hit]
 [Phase 1: Codebase Analysis] 0 calls · (cache hit)
 ```
+
+**For complex codebases where Python orientation isn't enough, use `--deep`:**
+
+```bash
+python codegen.py -i eq.md -d ./out/ --codebase /path/to/project --deep
+```
+
+`--deep` runs the full 3-explorer LLM analysis (original behaviour).
+Default is Python orientation + task-guided generation.
 
 **If the analyzer can't determine the base type** (multiple plausible candidates), it will ask:
 
