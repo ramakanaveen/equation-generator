@@ -204,17 +204,37 @@ def _cap_result(text: str, hint: str = '') -> str:
 # Symbol index  (language-aware regex scan)
 # ---------------------------------------------------------------------------
 
-# Java / Kotlin
+# Java
 _JAVA_PACKAGE_RE = re.compile(r'^\s*package\s+([\w.]+)\s*;?', re.MULTILINE)
 _JAVA_TYPE_RE = re.compile(
-    r'(?:(?:public|internal|open|data|sealed|value)\s+)*(?:(abstract)\s+)?'
-    r'(class|interface|enum(?:\s+class)?|object|annotation\s+class)\s+(\w+)'
-    r'(?:\s*:\s*([\w.<>, ()\n]+?))?(?=\s*[{(<])',
+    r'(?:(?:public|protected|private|static|abstract|final|strictfp|sealed|non-sealed)\s+)*'
+    r'(?:(abstract)\s+)?'
+    r'(class|interface|enum|@interface)\s+(\w+)'
+    r'(?:<[^>]*>)?'                              # skip generic type params
+    r'(?:\s+extends\s+([\w.<>?,\s]+?))?'         # Java: extends ClassName
+    r'(?:\s+implements\s+([\w.<>?,\s]+?))?'      # Java: implements I1, I2
+    r'\s*(?:\{|$)',
     re.MULTILINE,
 )
 _JAVA_METHOD_RE = re.compile(
+    r'(?:public|protected)\s+(?:(?:static|abstract|final|synchronized|native)\s+)*'
+    r'(?:void|[\w<>\[\].,?]+)\s+(\w+)\s*\(',
+    re.MULTILINE,
+)
+
+# Kotlin (uses `:` for supertypes)
+_KOTLIN_TYPE_RE = re.compile(
+    r'(?:(?:public|internal|open|data|sealed|value|abstract|private|protected)\s+)*'
+    r'(?:(abstract)\s+)?'
+    r'(class|interface|object|enum\s+class|annotation\s+class)\s+(\w+)'
+    r'(?:<[^>]*>)?'                              # skip generic type params
+    r'(?:\s*:\s*([\w.<>, ()\n?]+?))?'            # Kotlin: : SuperType(), Interface
+    r'(?=\s*[{(])',
+    re.MULTILINE,
+)
+_KOTLIN_METHOD_RE = re.compile(
     r'(?:public|protected|override|open)\s+(?:(?:suspend|inline|abstract)\s+)*'
-    r'(?:fun|void|[\w<>\[\].,?]+)\s+(\w+)\s*\(',
+    r'fun\s+(\w+)\s*\(',
     re.MULTILINE,
 )
 
@@ -247,26 +267,71 @@ def _is_test_file(rel_path: str) -> bool:
     return any(m in p for m in _TEST_PATH_MARKERS)
 
 
+def _simple_names(raw: str) -> list[str]:
+    """Split a comma-separated list of Java/Kotlin type names, stripping generics."""
+    return [s.strip().split('<')[0].strip() for s in raw.split(',') if s.strip()]
+
+
 def _parse_java(src: str, rel_path: str, root_real: str) -> list[dict]:
     pkg_m = _JAVA_PACKAGE_RE.search(src)
     package = pkg_m.group(1) if pkg_m else ''
     methods = list(dict.fromkeys(_JAVA_METHOD_RE.findall(src)))[:20]
     results = []
     for m in _JAVA_TYPE_RE.finditer(src):
-        abstract_flag = m.group(1)
+        kind_raw = m.group(2).strip()
+        name = m.group(3)
+        extends_raw = (m.group(4) or '').strip()
+        implements_raw = (m.group(5) or '').strip()
+        # abstract may be consumed by the leading modifier group — check full match text
+        is_abstract = bool(re.search(r'\babstract\b', m.group(0).split(kind_raw)[0]))
+
+        if kind_raw == 'interface':
+            kind = 'interface'
+            extends = _simple_names(extends_raw)   # Java interface uses `extends`
+            implements = []
+        elif is_abstract:
+            kind = 'abstract class'
+            extends = _simple_names(extends_raw)
+            implements = _simple_names(implements_raw)
+        else:
+            kind = kind_raw  # class / enum / @interface
+            extends = _simple_names(extends_raw)
+            implements = _simple_names(implements_raw)
+
+        fqn = f'{package}.{name}' if package else name
+        results.append({
+            'fqn': fqn, 'file': rel_path, 'kind': kind,
+            'extends': extends, 'implements': implements,
+            'methods': methods, 'package': package,
+            'test': _is_test_file(rel_path),
+        })
+    return results
+
+
+def _parse_kotlin(src: str, rel_path: str, root_real: str) -> list[dict]:
+    pkg_m = _JAVA_PACKAGE_RE.search(src)
+    package = pkg_m.group(1) if pkg_m else ''
+    methods = list(dict.fromkeys(_KOTLIN_METHOD_RE.findall(src)))[:20]
+    results = []
+    for m in _KOTLIN_TYPE_RE.finditer(src):
         kind_raw = m.group(2).replace('\n', ' ').strip()
         name = m.group(3)
         supertypes_raw = (m.group(4) or '').strip()
+        # abstract may be consumed by the leading modifier group — check full match text
+        is_abstract = bool(re.search(r'\babstract\b', m.group(0).split(kind_raw)[0]))
+        # Kotlin uses `:` for all supertypes; strip constructor calls e.g. Base()
+        supertypes = [re.sub(r'\(.*?\)', '', s).strip() for s in supertypes_raw.split(',') if s.strip()]
+        supertypes = [s for s in supertypes if s]
 
         if 'interface' in kind_raw:
             kind = 'interface'
-            extends, implements = [s.strip() for s in supertypes_raw.split(',') if s.strip()], []
-        elif abstract_flag or kind_raw.startswith('abstract'):
+            extends, implements = supertypes, []
+        elif is_abstract:
             kind = 'abstract class'
-            extends, implements = [], [s.strip() for s in supertypes_raw.split(',') if s.strip()]
+            extends, implements = [], supertypes
         else:
-            kind = kind_raw.split()[0]  # class / enum / object / etc.
-            extends, implements = [], [s.strip() for s in supertypes_raw.split(',') if s.strip()]
+            kind = kind_raw.split()[0]
+            extends, implements = [], supertypes
 
         fqn = f'{package}.{name}' if package else name
         results.append({
@@ -337,7 +402,8 @@ def _parse_go(src: str, rel_path: str, root_real: str) -> list[dict]:
 
 
 _PARSERS = {
-    'java': _parse_java, 'kotlin': _parse_java,
+    'java': _parse_java,
+    'kotlin': _parse_kotlin,
     'python': _parse_python,
     'typescript': _parse_typescript, 'javascript': _parse_typescript,
     'go': _parse_go,
