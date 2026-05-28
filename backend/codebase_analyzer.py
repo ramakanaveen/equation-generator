@@ -201,6 +201,28 @@ def _cap_result(text: str, hint: str = '') -> str:
     return text[:MAX_TOOL_RESULT_CHARS] + f'\n[... {remaining} chars truncated — {tip}]'
 
 # ---------------------------------------------------------------------------
+# Tree-sitter helpers (lazy-load; graceful fallback to regex if not installed)
+# ---------------------------------------------------------------------------
+
+def _get_ts_parser(lang: str):
+    """Lazy-load Tree-sitter parser for java or python. Returns None if not installed."""
+    try:
+        from tree_sitter import Parser as TSParser, Language as TSLanguage
+        if lang == 'java':
+            import tree_sitter_java as ts_java
+            return TSParser(TSLanguage(ts_java.language()))
+        if lang == 'python':
+            import tree_sitter_python as ts_py
+            return TSParser(TSLanguage(ts_py.language()))
+    except Exception:
+        pass
+    return None
+
+
+def _node_text(node, src_bytes: bytes) -> str:
+    return src_bytes[node.start_byte:node.end_byte].decode('utf-8', 'replace')
+
+# ---------------------------------------------------------------------------
 # Symbol index  (language-aware regex scan)
 # ---------------------------------------------------------------------------
 
@@ -308,6 +330,144 @@ def _parse_java(src: str, rel_path: str, root_real: str) -> list[dict]:
     return results
 
 
+def _parse_java_ts(src: str, rel_path: str, root_real: str) -> list[dict]:
+    """Tree-sitter Java parser: extracts imports + abstract methods. Falls back to regex."""
+    parser = _get_ts_parser('java')
+    if parser is None:
+        results = _parse_java(src, rel_path, root_real)
+        for r in results:
+            r.setdefault('imports', {})
+            r.setdefault('abstract_methods', [])
+        return results
+
+    src_bytes = src.encode('utf-8')
+    tree = parser.parse(src_bytes)
+    root = tree.root_node
+
+    def txt(node) -> str:
+        return _node_text(node, src_bytes)
+
+    # Package declaration
+    package = ''
+    for child in root.children:
+        if child.type == 'package_declaration':
+            raw = txt(child)
+            package = re.sub(r'^package\s+', '', raw).strip().rstrip(';').strip()
+            break
+
+    # Import declarations: short_name → fqn (skip wildcards)
+    imports: dict[str, str] = {}
+    for child in root.children:
+        if child.type == 'import_declaration':
+            raw = txt(child).strip().rstrip(';').strip()
+            fqn = re.sub(r'^import\s+(static\s+)?', '', raw).strip()
+            if not fqn.endswith('*') and '.' in fqn:
+                short = fqn.rsplit('.', 1)[-1]
+                imports[short] = fqn
+
+    results = []
+
+    def _process_type(node):
+        node_type = node.type
+        name = ''
+        extends: list[str] = []
+        implements_list: list[str] = []
+        abstract_methods: list[dict] = []
+        method_names: list[str] = []
+        is_abstract = False
+
+        for child in node.children:
+            ct = child.type
+            if ct == 'modifiers' and 'abstract' in txt(child):
+                is_abstract = True
+            elif ct == 'identifier' and not name:
+                name = txt(child)
+            elif ct == 'superclass':
+                raw = txt(child)
+                m = re.search(r'extends\s+([\w.<>?,\s]+)', raw)
+                if m:
+                    for t in m.group(1).split(','):
+                        t = t.strip().split('<')[0].strip()
+                        if t:
+                            extends.append(t)
+            elif ct == 'super_interfaces':
+                raw = txt(child)
+                m = re.search(r'implements\s+([\w.<>?,\s]+)', raw)
+                if m:
+                    for t in m.group(1).split(','):
+                        t = t.strip().split('<')[0].strip()
+                        if t:
+                            implements_list.append(t)
+            elif ct == 'extends_interfaces':
+                raw = txt(child)
+                m = re.search(r'extends\s+([\w.<>?,\s]+)', raw)
+                if m:
+                    for t in m.group(1).split(','):
+                        t = t.strip().split('<')[0].strip()
+                        if t:
+                            extends.append(t)
+            elif ct in ('class_body', 'interface_body'):
+                is_iface = node_type == 'interface_declaration'
+                for member in child.named_children:
+                    if member.type != 'method_declaration':
+                        continue
+                    mtext = txt(member)
+                    has_block = any(c.type == 'block' for c in member.children)
+                    # Method name: first 'identifier' in named_children
+                    mname = ''
+                    for mc in member.named_children:
+                        if mc.type == 'identifier':
+                            mname = txt(mc)
+                            break
+                    if not mname:
+                        continue
+                    method_names.append(mname)
+                    mods_text = next(
+                        (txt(c) for c in member.children if c.type == 'modifiers'), ''
+                    )
+                    is_abs = (
+                        'abstract' in mods_text or
+                        (is_iface and not has_block
+                         and 'default' not in mods_text and 'static' not in mods_text)
+                    )
+                    if is_abs:
+                        sig = mtext.strip().split('{')[0].strip().rstrip(';').strip()
+                        # Strip modifiers and annotations
+                        sig = re.sub(r'@\w+\s*', '', sig).strip()
+                        sig = re.sub(r'\b(public|protected|abstract|default|static|synchronized|native|strictfp)\b\s*', '', sig).strip()
+                        sig = ' '.join(sig.split())
+                        abstract_methods.append({'name': mname, 'signature': sig})
+
+        if not name:
+            return
+        if node_type == 'interface_declaration':
+            kind = 'interface'
+        elif node_type == 'enum_declaration':
+            kind = 'enum'
+        elif node_type == 'annotation_type_declaration':
+            kind = '@interface'
+        elif is_abstract:
+            kind = 'abstract class'
+        else:
+            kind = 'class'
+        fqn = f'{package}.{name}' if package else name
+        results.append({
+            'fqn': fqn, 'file': rel_path, 'kind': kind,
+            'extends': extends, 'implements': implements_list,
+            'methods': list(dict.fromkeys(method_names))[:20],
+            'abstract_methods': abstract_methods,
+            'imports': imports,
+            'package': package,
+            'test': _is_test_file(rel_path),
+        })
+
+    for child in root.children:
+        if child.type in ('class_declaration', 'interface_declaration',
+                          'enum_declaration', 'annotation_type_declaration'):
+            _process_type(child)
+    return results
+
+
 def _parse_kotlin(src: str, rel_path: str, root_real: str) -> list[dict]:
     pkg_m = _JAVA_PACKAGE_RE.search(src)
     package = pkg_m.group(1) if pkg_m else ''
@@ -365,6 +525,128 @@ def _parse_python(src: str, rel_path: str, root_real: str) -> list[dict]:
     return results
 
 
+def _parse_python_ts(src: str, rel_path: str, root_real: str) -> list[dict]:
+    """Tree-sitter Python parser: extracts imports + abstract methods. Falls back to regex."""
+    parser = _get_ts_parser('python')
+    if parser is None:
+        results = _parse_python(src, rel_path, root_real)
+        for r in results:
+            r.setdefault('imports', {})
+            r.setdefault('abstract_methods', [])
+        return results
+
+    src_bytes = src.encode('utf-8')
+    tree = parser.parse(src_bytes)
+    root = tree.root_node
+
+    def txt(node) -> str:
+        return _node_text(node, src_bytes)
+
+    # Module path from file path
+    parts = rel_path.replace(os.sep, '/').replace('.py', '').split('/')
+    if parts and parts[0] in ('src', 'lib'):
+        parts = parts[1:]
+    module = '.'.join(p for p in parts if p and p != '__init__') if len(parts) > 1 else ''
+
+    # Extract imports using node text (simpler + reliable)
+    imports: dict[str, str] = {}
+    for child in root.children:
+        if child.type == 'import_statement':
+            raw = re.sub(r'^import\s+', '', txt(child).strip())
+            for part in raw.split(','):
+                part = part.strip()
+                if ' as ' in part:
+                    orig, alias = part.split(' as ', 1)
+                    imports[alias.strip()] = orig.strip()
+                else:
+                    fqn = part.strip()
+                    if fqn:
+                        imports[fqn.rsplit('.', 1)[-1]] = fqn
+        elif child.type == 'import_from_statement':
+            raw = txt(child).strip()
+            m = re.match(r'from\s+([\w.]+)\s+import\s+(.*)', raw, re.DOTALL)
+            if m:
+                mod = m.group(1).strip()
+                names_part = m.group(2).strip().strip('()')
+                for part in names_part.split(','):
+                    part = part.strip()
+                    if not part or part == '*':
+                        continue
+                    if ' as ' in part:
+                        orig, alias = part.split(' as ', 1)
+                        imports[alias.strip()] = f'{mod}.{orig.strip()}'
+                    else:
+                        imports[part] = f'{mod}.{part}'
+
+    results = []
+
+    def _process_class(class_node):
+        name = ''
+        bases: list[str] = []
+        abstract_methods: list[dict] = []
+        method_names: list[str] = []
+
+        for child in class_node.children:
+            ct = child.type
+            if ct == 'identifier' and not name:
+                name = txt(child)
+            elif ct == 'argument_list':
+                for base in child.named_children:
+                    if base.type in ('identifier', 'attribute'):
+                        bases.append(txt(base).rsplit('.', 1)[-1])
+            elif ct == 'block':
+                for member in child.children:
+                    func_node = None
+                    member_decorators: list[str] = []
+                    if member.type == 'function_definition':
+                        func_node = member
+                    elif member.type == 'decorated_definition':
+                        for n in member.children:
+                            if n.type == 'decorator':
+                                member_decorators.append(txt(n))
+                            elif n.type == 'function_definition':
+                                func_node = n
+                    if func_node:
+                        fn_name = ''
+                        for n in func_node.named_children:
+                            if n.type == 'identifier':
+                                fn_name = txt(n)
+                                break
+                        if fn_name:
+                            method_names.append(fn_name)
+                            if any('abstractmethod' in d for d in member_decorators):
+                                # Build signature from tree nodes (exclude the body block)
+                                sig = ' '.join(
+                                    txt(c) for c in func_node.children
+                                    if c.type not in ('block', 'comment')
+                                ).strip().rstrip(':').strip()
+                                abstract_methods.append({'name': fn_name, 'signature': sig})
+
+        if not name:
+            return
+        is_abstract = any(b in ('ABC', 'ABCMeta') for b in bases) or bool(abstract_methods)
+        kind = 'abstract class' if is_abstract else 'class'
+        fqn = f'{module}.{name}' if module else name
+        results.append({
+            'fqn': fqn, 'file': rel_path, 'kind': kind,
+            'extends': bases, 'implements': [],
+            'methods': list(dict.fromkeys(method_names))[:20],
+            'abstract_methods': abstract_methods,
+            'imports': imports,
+            'package': module,
+            'test': _is_test_file(rel_path),
+        })
+
+    for child in root.children:
+        if child.type == 'class_definition':
+            _process_class(child)
+        elif child.type == 'decorated_definition':
+            for n in child.children:
+                if n.type == 'class_definition':
+                    _process_class(n)
+    return results
+
+
 def _parse_typescript(src: str, rel_path: str, root_real: str) -> list[dict]:
     methods = list(dict.fromkeys(_TS_METHOD_RE.findall(src)))[:20]
     results = []
@@ -402,9 +684,9 @@ def _parse_go(src: str, rel_path: str, root_real: str) -> list[dict]:
 
 
 _PARSERS = {
-    'java': _parse_java,
+    'java': _parse_java_ts,       # Tree-sitter; falls back to regex if not installed
     'kotlin': _parse_kotlin,
-    'python': _parse_python,
+    'python': _parse_python_ts,   # Tree-sitter; falls back to regex if not installed
     'typescript': _parse_typescript, 'javascript': _parse_typescript,
     'go': _parse_go,
 }
@@ -1002,21 +1284,122 @@ async def _synthesize_with_clarification(
     )
 
 # ---------------------------------------------------------------------------
-# Python-generated orientation  (0 API calls — Claude Code CLAUDE.md pattern)
+# Eager context resolution helpers
+# ---------------------------------------------------------------------------
+
+_BASE_SRC_CAP = 8_000    # chars — covers most interface/abstract class files
+_EXAMPLE_SRC_CAP = 10_000  # chars — covers most concrete implementations
+
+
+def _resolve_to_source(
+    top_candidates: list[tuple[str, int]],
+    symbol_index: dict,
+    root_path: str,
+    require_abstract: bool = True,
+) -> tuple[str, str, dict]:
+    """
+    Walk top fan-in candidates and return the first that resolves to a readable file.
+    Returns (fqn, source_text, imports_dict).
+    """
+    for name, _count in top_candidates:
+        for fqn, entry in symbol_index.items():
+            simple = fqn.rsplit('.', 1)[-1].split('<')[0]
+            if simple != name:
+                continue
+            if require_abstract and entry.get('kind') not in ('interface', 'abstract class'):
+                continue
+            file_rel = entry.get('file', '')
+            if not file_rel:
+                continue
+            fpath = os.path.join(root_path, file_rel)
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                src = open(fpath, encoding='utf-8', errors='replace').read()
+                if len(src) > _BASE_SRC_CAP:
+                    src = src[:_BASE_SRC_CAP] + f'\n... (truncated at {_BASE_SRC_CAP} chars)'
+                return fqn, src, entry.get('imports', {})
+            except OSError:
+                pass
+    return '', '', {}
+
+
+def _find_example_implementor(
+    base_fqn: str,
+    symbol_index: dict,
+    root_path: str,
+) -> tuple[str, str, dict]:
+    """
+    Find the most complete non-test concrete class that implements/extends base_fqn.
+    Handles transitive inheritance: A extends B implements BaseSignal → MomentumSignal extends A.
+    Returns (fqn, source_text, imports_dict).
+    """
+    if not base_fqn:
+        return '', '', {}
+    base_simple = base_fqn.rsplit('.', 1)[-1].split('<')[0]
+
+    # Build the set of all type simple names that are in the base type's hierarchy
+    # (includes the base type itself + all abstract classes that extend/implement it)
+    hierarchy: set[str] = {base_simple}
+    changed = True
+    while changed:
+        changed = False
+        for fqn_inner, entry in symbol_index.items():
+            simple_inner = fqn_inner.rsplit('.', 1)[-1].split('<')[0]
+            if simple_inner in hierarchy:
+                continue
+            parents = entry.get('extends', []) + entry.get('implements', [])
+            parent_simples = {p.split('<')[0].strip() for p in parents}
+            if parent_simples & hierarchy:
+                hierarchy.add(simple_inner)
+                changed = True
+
+    candidates = []
+    for fqn, entry in symbol_index.items():
+        if entry.get('test'):
+            continue
+        if entry.get('kind') in ('interface', 'abstract class'):
+            continue
+        parents = entry.get('extends', []) + entry.get('implements', [])
+        parent_simples = {p.split('<')[0].strip() for p in parents}
+        if not (parent_simples & hierarchy):
+            continue
+        candidates.append((fqn, entry, len(entry.get('methods', []))))
+
+    candidates.sort(key=lambda x: -x[2])  # most methods = most complete implementation
+
+    for fqn, entry, _count in candidates[:3]:
+        file_rel = entry.get('file', '')
+        if not file_rel:
+            continue
+        fpath = os.path.join(root_path, file_rel)
+        if not os.path.isfile(fpath):
+            continue
+        try:
+            src = open(fpath, encoding='utf-8', errors='replace').read()
+            if len(src) > _EXAMPLE_SRC_CAP:
+                src = src[:_EXAMPLE_SRC_CAP] + f'\n... (truncated at {_EXAMPLE_SRC_CAP} chars)'
+            return fqn, src, entry.get('imports', {})
+        except OSError:
+            pass
+    return '', '', {}
+
+
+# ---------------------------------------------------------------------------
+# Python-generated orientation  (0 API calls — Understand-Anything pattern)
 # ---------------------------------------------------------------------------
 
 def _build_orientation(root_path: str, lang: str, symbol_index: dict, bootstrap: str) -> str:
     """
-    Build a minimal orientation from symbol_index + bootstrap files.
-    Pure Python, 0 API calls. Acts like CLAUDE.md — gives the generation LLM
-    a starting point so the equation guides targeted exploration, not broad discovery.
+    Build a rich orientation: full base type source + full example source + import map.
+    Pure Python, 0 API calls.
 
-    Fan-in analysis: count how many production classes extend/implement each type.
-    The type with highest fan-in is almost always the correct base type.
+    Eliminates LLM exploration in Phase 2 — everything needed to write a correct
+    implementation is embedded upfront (Understand-Anything / Cline pattern).
     """
     n_total = len(symbol_index)
     n_base = sum(1 for e in symbol_index.values() if e['kind'] in ('interface', 'abstract class'))
-    n_with_parents = sum(1 for e in symbol_index.values() if e['extends'] or e['implements'])
+    n_with_parents = sum(1 for e in symbol_index.values() if e.get('extends') or e.get('implements'))
 
     # Fan-in: count production-class references to each type name
     fan_in: dict[str, int] = {}
@@ -1028,23 +1411,73 @@ def _build_orientation(root_path: str, lang: str, symbol_index: dict, bootstrap:
             if simple:
                 fan_in[simple] = fan_in.get(simple, 0) + 1
 
-    top = sorted(fan_in.items(), key=lambda x: -x[1])[:5]
-    candidates_str = '\n'.join(
-        f'  {i + 1}. {name}: {count} production implementations'
-        for i, (name, count) in enumerate(top)
-    ) or '  (none detected — use query_symbols to explore)'
+    top = sorted(fan_in.items(), key=lambda x: -x[1])
+
+    # Eagerly resolve base type → full source
+    base_fqn, base_src, base_imports = _resolve_to_source(top, symbol_index, root_path, require_abstract=True)
+
+    # Find best production implementor → full source
+    example_fqn, example_src, example_imports = _find_example_implementor(base_fqn, symbol_index, root_path)
+
+    # Merge import maps (example imports most useful — they show exact working imports)
+    import_map = {**base_imports, **example_imports}
+    import_map_str = '\n'.join(
+        f'  {short} → {fqn}' for short, fqn in sorted(import_map.items())
+    ) or '  (none detected — check imports in example source above)'
+
+    # Abstract methods the LLM must implement
+    abs_methods_str = ''
+    if base_fqn and base_fqn in symbol_index:
+        abs_list = symbol_index[base_fqn].get('abstract_methods', [])
+        if abs_list:
+            abs_methods_str = '\n### Abstract Methods You Must Implement\n' + '\n'.join(
+                f'  - {m["signature"]}' for m in abs_list
+            )
+
+    # Target package: use example's package if found, else base type's package
+    target_pkg = ''
+    if example_fqn and '.' in example_fqn:
+        target_pkg = example_fqn.rsplit('.', 1)[0]
+    elif base_fqn and '.' in base_fqn:
+        target_pkg = base_fqn.rsplit('.', 1)[0]
+
+    # Fallback candidates if resolution failed (LLM can still explore)
+    fallback = ''
+    if not base_src:
+        candidates_str = '\n'.join(
+            f'  {i+1}. {name}: {count} implementations' for i, (name, count) in enumerate(top[:5])
+        ) or '  (none detected)'
+        fallback = (
+            f'Could not resolve base type source automatically. Top candidates:\n'
+            f'{candidates_str}\n'
+            f'Use query_symbols + read_file to find the base type.\n'
+        )
 
     return (
-        f'Language: {lang}\n'
-        f'Codebase: {n_total} symbols ({n_base} base types, {n_with_parents} with inheritance)\n'
+        f'Language: {lang} | '
+        f'Symbols: {n_total} ({n_base} base types, {n_with_parents} with inheritance)\n'
         f'\n'
-        f'## Likely Base Type Candidates (by production fan-in)\n'
-        f'{candidates_str}\n'
+        f'## Base Type\n'
+        f'{base_fqn or "(see query_symbols)"}'
+        f'{abs_methods_str}\n'
         f'\n'
-        f'Use query_symbols to confirm the base type, then read_file to inspect its signature.\n'
+        f'### Full Source\n'
+        f'{base_src or fallback or "(not found — use query_symbols + read_file)"}\n'
+        f'\n'
+        f'## Reference Implementation\n'
+        f'{example_fqn or "(see query_symbols)"}\n'
+        f'\n'
+        f'### Full Source\n'
+        f'{example_src or "(not found — use query_symbols + read_file)"}\n'
+        f'\n'
+        f'## Import Map (available classes → FQN)\n'
+        f'{import_map_str}\n'
+        f'\n'
+        f'## Target Package\n'
+        f'{target_pkg or "(derive from base type package)"}\n'
         f'\n'
         f'## Bootstrap\n'
-        f'{bootstrap[:3000]}'
+        f'{bootstrap[:1500]}'
     )
 
 

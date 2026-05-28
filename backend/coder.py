@@ -1,8 +1,115 @@
 import asyncio
+import hashlib
 import os
 import re
+import sys
 
 from generator import _call_with_continuation, api_call_with_backoff, UsageTracker
+
+# Session-level classpath cache — keyed by codebase_root; avoids repeated Maven calls
+_CP_CACHE: dict[str, str] = {}
+
+
+def _find_java_src_roots(codebase_root: str) -> list[str]:
+    """Find all src/main/java directories (handles multimodule Maven). Returns up to 10."""
+    roots = []
+    for dirpath, dirnames, _ in os.walk(codebase_root):
+        dirnames[:] = [d for d in dirnames if d not in {'.git', 'target', 'build', '.gradle', 'node_modules'}]
+        if dirpath.endswith(os.path.join('src', 'main', 'java')):
+            roots.append(dirpath)
+            if len(roots) >= 10:
+                break
+    return roots or [codebase_root]
+
+
+async def _discover_java_classpath(codebase_root: str) -> str:
+    """
+    Auto-discover the compile classpath for a Java project.
+    Priority: session cache → Maven → Gradle build output → target/classes → empty.
+    """
+    if codebase_root in _CP_CACHE:
+        return _CP_CACHE[codebase_root]
+
+    cp = ''
+    pom = os.path.join(codebase_root, 'pom.xml')
+    gradle = next(
+        (os.path.join(codebase_root, f) for f in ('build.gradle', 'build.gradle.kts')
+         if os.path.isfile(os.path.join(codebase_root, f))), None
+    )
+
+    if os.path.isfile(pom):
+        cp_file = f'/tmp/codegen_cp_{hashlib.md5(codebase_root.encode()).hexdigest()[:8]}.txt'
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                'mvn', 'dependency:build-classpath', '-q',
+                '-DincludeScope=compile',
+                f'-Dmdep.outputFile={cp_file}',
+                '-f', pom,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=60)
+            if os.path.isfile(cp_file):
+                cp = open(cp_file).read().strip()
+        except Exception:
+            pass
+
+    if not cp and gradle:
+        classes = os.path.join(codebase_root, 'build', 'classes', 'java', 'main')
+        if os.path.isdir(classes):
+            cp = classes
+
+    if not cp:
+        target = os.path.join(codebase_root, 'target', 'classes')
+        if os.path.isdir(target):
+            cp = target
+
+    _CP_CACHE[codebase_root] = cp
+    return cp
+
+
+async def _run_compile_check(java_file_path: str, codebase_root: str) -> str:
+    """Run javac on the generated file. Returns errors or 'Compiled successfully.'"""
+    classpath = await _discover_java_classpath(codebase_root)
+    src_roots = _find_java_src_roots(codebase_root)
+    out_dir = '/tmp/codegen_compile_out'
+    os.makedirs(out_dir, exist_ok=True)
+
+    cmd = ['javac', '-nowarn', '-d', out_dir]
+    if classpath:
+        cmd += ['-cp', classpath]
+    if src_roots:
+        cmd += ['-sourcepath', os.pathsep.join(src_roots)]
+    cmd.append(java_file_path)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        output = stderr.decode('utf-8', errors='replace').strip()
+        return 'Compiled successfully.' if proc.returncode == 0 else (output or 'Compilation failed.')
+    except asyncio.TimeoutError:
+        return 'Compile check timed out (30s).'
+    except FileNotFoundError:
+        return 'javac not found — ensure JDK is installed and on PATH.'
+
+
+async def _run_python_compile_check(py_file_path: str) -> str:
+    """Run py_compile on the generated file. Returns errors or 'Compiled successfully.'"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, '-m', 'py_compile', py_file_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        output = stderr.decode('utf-8', errors='replace').strip()
+        return 'Compiled successfully.' if proc.returncode == 0 else output
+    except asyncio.TimeoutError:
+        return 'Compile check timed out (10s).'
 
 
 _WRITE_FILE_TOOL = {
@@ -78,6 +185,26 @@ _QUERY_SYMBOLS_TOOL = {
             'test': {'type': 'boolean', 'description': 'false=production only, true=test only, omit=all'},
             'limit': {'type': 'integer', 'default': 50},
         },
+    },
+}
+
+_COMPILE_CHECK_TOOL = {
+    'name': 'compile_check',
+    'description': (
+        'Compile the generated file with the real compiler to check for errors. '
+        'Returns compiler errors or "Compiled successfully.". '
+        'Always call this after write_file. '
+        'If errors are returned: fix them with write_file, then call compile_check again to confirm.'
+    ),
+    'input_schema': {
+        'type': 'object',
+        'properties': {
+            'filename': {
+                'type': 'string',
+                'description': 'Filename written by write_file (e.g. MySignal.java)',
+            },
+        },
+        'required': ['filename'],
     },
 }
 
@@ -177,16 +304,56 @@ def _gen_search_code(inputs: dict, root: str) -> str:
     return '\n'.join(results) if results else f'[No matches for {pattern!r}]'
 
 
+def _derive_java_dest(content: str, filename: str, codebase_root: str) -> str | None:
+    """
+    Derive the correct codebase path for a generated Java file from its package declaration.
+    Returns absolute path or None if package cannot be determined.
+    """
+    m = re.search(r'^\s*package\s+([\w.]+)\s*;', content, re.MULTILINE)
+    if not m:
+        return None
+    pkg = m.group(1)
+    pkg_path = pkg.replace('.', os.sep)
+    src_roots = _find_java_src_roots(codebase_root)
+    for root in src_roots:
+        dest_dir = os.path.join(root, pkg_path)
+        if os.path.isdir(dest_dir):
+            return os.path.join(dest_dir, filename)
+    # Fallback: use first src root even if directory doesn't exist yet
+    dest_dir = os.path.join(src_roots[0], pkg_path)
+    return os.path.join(dest_dir, filename)
+
+
+def _derive_python_dest(content: str, filename: str, codebase_root: str) -> str | None:
+    """
+    Derive the correct codebase path for a generated Python file.
+    Looks for '# module: foo.bar' comment or uses the package structure.
+    """
+    m = re.search(r'^#\s*module:\s*([\w.]+)', content, re.MULTILINE)
+    if not m:
+        return None
+    mod = m.group(1)
+    mod_path = mod.replace('.', os.sep) + '.py'
+    # Try common source roots
+    for src_root_name in ('src', 'lib', ''):
+        candidate = os.path.join(codebase_root, src_root_name, mod_path) if src_root_name else os.path.join(codebase_root, mod_path)
+        parent = os.path.dirname(candidate)
+        if os.path.isdir(parent):
+            return candidate
+    return None
+
+
 async def _run_codegen_loop(
     system, user_msg, out_dir, cfg, client, model,
     codebase_root=None, symbol_index=None, tracker=None,
+    language: str = 'java', update_codebase: bool = False,
+    progress_cb=None,
 ):
     """
     Tool-use loop for code generation (Claude Code pattern).
-    write_file: write to output.
-    read_file: verify output OR look up codebase files.
-    search_code, query_symbols: live codebase lookup during generation.
-    _compact_messages: context compacting when history grows large.
+    write_file: write to output directory (and optionally codebase with --update).
+    compile_check: runs javac/py_compile and returns errors for the LLM to fix.
+    read_file, search_code, query_symbols: codebase lookup (rarely needed with rich orientation).
     """
     messages = [{'role': 'user', 'content': user_msg}]
     count = 0
@@ -196,6 +363,8 @@ async def _run_codegen_loop(
     tools = list(_BASE_CODEGEN_TOOLS)
     if codebase_root and symbol_index is not None:
         tools += _CODEBASE_TOOLS
+    if codebase_root and language in ('java', 'python'):
+        tools = tools + [_COMPILE_CHECK_TOOL]
 
     for _ in range(_MAX_CODEGEN_TURNS):
         messages = await _compact_messages(messages, cfg, client, model, tracker=tracker)
@@ -230,8 +399,35 @@ async def _run_codegen_loop(
                         count += 1
                         yield ('file', filename, count)
                         result_text = f'Written: {filename}'
+                        # --update: copy to correct location in the codebase
+                        if update_codebase and codebase_root:
+                            clean = _strip_fences(content)
+                            if language == 'java':
+                                dest = _derive_java_dest(clean, filename, codebase_root)
+                            elif language == 'python':
+                                dest = _derive_python_dest(clean, filename, codebase_root)
+                            else:
+                                dest = None
+                            if dest:
+                                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                                await asyncio.to_thread(_write_one_file, dest, clean)
+                                yield ('update', dest, count)
                     else:
                         result_text = 'Error: filename and content are required'
+
+                elif name == 'compile_check' and codebase_root:
+                    cc_filename = tu.input.get('filename', '').strip()
+                    written_path = os.path.join(out_dir, cc_filename)
+                    if not cc_filename or not os.path.isfile(written_path):
+                        result_text = f'File not found: {cc_filename!r} — call write_file first'
+                    elif language == 'java':
+                        result_text = await _run_compile_check(written_path, codebase_root)
+                    elif language == 'python':
+                        result_text = await _run_python_compile_check(written_path)
+                    else:
+                        result_text = 'compile_check not supported for this language'
+                    if progress_cb:
+                        progress_cb(f'  [compile_check: {result_text[:120]}]\n')
 
                 elif name == 'read_file':
                     filename = tu.input.get('filename', '').strip()
