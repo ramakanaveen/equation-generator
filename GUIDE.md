@@ -118,64 +118,77 @@ python eqgen.py | python codegen.py -d ./out/
 
 ### Codebase-aware generation
 
-Pass `--codebase` to point `codegen.py` at a real project. The analyzer auto-detects the language,
-explores the codebase structure, and generates code that integrates correctly — using the actual
-base class/interface, package, imports, and conventions it discovers.
+Pass `--codebase` to point `codegen.py` at a real project. The analyzer auto-detects the language
+and generates code that integrates correctly — using the actual base class/interface, package,
+imports, and conventions it discovers.
 
 Works with any language: **Java, Python, TypeScript, Kotlin, Go**.
 
 ```bash
 python codegen.py -i eq.md -d ./out/ --codebase /path/to/your/project
+
+# Write generated file directly into the codebase at the correct package/module path
+python codegen.py -i eq.md --codebase /path/to/your/project --update
+# or: -u
+python codegen.py -i eq.md --codebase /path/to/your/project -u
 ```
 
 **What happens under the hood:**
 
 ```
 1. Language detected from file extension counts
-2. Symbol index built in Python (~1s) — scans all source files, kept in memory
-3. Phase 1 orientation built in Python (0 API calls):
+2. Tree-sitter symbol index built in Python (~1s, 0 API calls):
+     - Proper CST parser for Java + Python (regex fallback for other languages)
+     - Per-file: import maps (short name → fully-qualified name),
+       abstract method signatures, class hierarchy, inheritance
+3. Eager context loading (0 API calls):
      - Fan-in analysis: counts how many production classes extend/implement each type
        The most-implemented type is almost always the correct base type
-     - Bootstrap files read: CLAUDE.md, README, build manifest
-     - Result: a scoped briefing (like CLAUDE.md) with base type candidates + context
-4. Phase 2 generation — the equation acts as the exploration compass:
-     - LLM calls query_symbols once to confirm the base type
-     - Calls read_file once on the confirmed base type to see its signature
+     - Full source of base type + best reference implementation read directly
+     - Import maps merged from both files
+     - Result: complete orientation (~8K tokens) with everything needed for generation
+4. Phase 2 generation — single focused pass:
+     - LLM receives full base type source + example + import map upfront (no exploration)
      - Writes the file with write_file
-     - Verifies with read_file
-     Total: ~4 targeted API calls guided by the specific equation
+     - Calls compile_check → runs real javac (Java, auto-discovers Maven classpath)
+       or py_compile (Python); errors are fixed and re-checked
+     Total: ~3 API calls / ~20K tokens
 ```
 
-This follows the Claude Code / Cline pattern: no pre-analysis LLM exploration — the task
-description guides what to look for. Only what the equation actually needs gets looked up.
-
-**Progress output:**
+**Progress output (Java):**
 
 ```
-[Language: python | Symbols: 42 (3 base types, 18 with inheritance) | Python orientation built (0 API calls)]
+[Language: java | Symbols: 142 (8 base types, 67 with inheritance) | Python orientation built (0 API calls)]
 [Phase 1: Codebase Analysis] 0 calls · orientation built from symbol index
 
 [Phase 2: Generating code]
-[Written: ./out/volume_weighted_momentum_alpha.py]
+  [compile_check: Compiled successfully.]
+[Written: ./out/VolumeWeightedMomentumSignal.java]
 
-[Phase 2: Code Generation] 4 calls · 12,450 in + 3,210 out = 15,660 tokens
+[Phase 2: Code Generation] 3 calls · 18,420 in + 2,890 out = 21,310 tokens
+```
+
+With `--update`, the file is placed directly in the codebase:
+
+```
+[Updated codebase: src/main/java/com/trading/signals/VolumeWeightedMomentumSignal.java]
 ```
 
 On a repeated run (same codebase, any equation):
 
 ```
-[Language: python | Orientation cache hit]
+[Language: java | Orientation cache hit]
 [Phase 1: Codebase Analysis] 0 calls · (cache hit)
 ```
 
-**For complex codebases where Python orientation isn't enough, use `--deep`:**
+**For complex codebases where the static orientation isn't enough, use `--deep`:**
 
 ```bash
 python codegen.py -i eq.md -d ./out/ --codebase /path/to/project --deep
 ```
 
-`--deep` runs the full 3-explorer LLM analysis (original behaviour).
-Default is Python orientation + task-guided generation.
+`--deep` runs the full 3-explorer LLM analysis (slower, more thorough).
+Default is Tree-sitter static orientation + compile-check generation.
 
 **If the analyzer can't determine the base type** (multiple plausible candidates), it will ask:
 
@@ -208,26 +221,48 @@ backend/policy/codegen.md  — codebase-aware generation rules (used with --code
 
 `code.md` and `codegen.md` are **your** files — the system never modifies them.
 
-When `--codebase` is used, the discovered CodebaseProfile is appended to `codegen.md` at runtime:
+When `--codebase` is used, the Codebase Orientation is appended to `codegen.md` at runtime:
 
 ```
 [your codegen.md]
 
-## Codebase Profile
+## Codebase Orientation
 
 ## Language
-python
-
-## Package / Module
-trading.signals
+java
 
 ## Base Type
-class BaseSignal(ABC): ...
-...
+com.trading.signals.BaseSignal
+
+### Abstract Methods You Must Implement
+  - double compute(DataSet data, int lookbackPeriod)
+  - String getName()
+
+### Full Source
+public abstract class BaseSignal {
+  ...full file source...
+}
+
+## Reference Implementation
+com.trading.signals.MomentumSignal
+
+### Full Source
+public class MomentumSignal extends BaseSignal {
+  ...full file source...
+}
+
+## Import Map (available classes → FQN)
+  DataSet → com.example.data.DataSet
+  MathUtils → com.example.utils.MathUtils
+  ...
+
+## Target Package
+com.trading.signals
 ```
 
-The generator reads both: `codegen.md` provides generation rules and style, the profile provides
-language-specific integration facts. The profile cache means this analysis only runs once per
+`codegen.md` provides generation rules; the orientation provides the base type source, a complete
+example, and the full import map — everything the LLM needs to write correct, compilable code
+without any codebase exploration. The orientation cache means this analysis only runs once per
 codebase — any subsequent equation on the same unchanged codebase gets a cache hit.
 
 ---

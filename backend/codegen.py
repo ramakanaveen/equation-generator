@@ -43,6 +43,10 @@ async def main():
         "--deep", "-D", action="store_true",
         help="Use full 3-explorer LLM analysis instead of Python orientation (slower, more thorough)",
     )
+    parser.add_argument(
+        "--update", "-u", action="store_true",
+        help="Write generated file directly into the codebase at the correct package/module path",
+    )
     args = parser.parse_args()
 
     if args.input:
@@ -89,12 +93,17 @@ async def main():
                 progress_cb=lambda t: print(t, end="", flush=True, file=sys.stderr),
             )
 
-        # System prompt = codegen.md policy + codebase profile
-        system = f"{_load_codegen_policy()}\n\n## Codebase Profile\n\n{profile}"
+        # Detect language from symbol_index file extensions
+        from codebase_analyzer import _detect_language
+        lang = _detect_language(cb_path)
+
+        # System prompt = codegen.md policy + codebase profile (with full sources)
+        system = f"{_load_codegen_policy()}\n\n## Codebase Orientation\n\n{profile}"
         user_msg = f"Implement this alpha equation:\n\n{equation_text}"
         print("\n\n[Phase 2: Generating code]\n", file=sys.stderr)
 
     else:
+        lang = 'java'
         # Standalone mode: use code.md (user-defined policy, e.g. AlphaExpression interface)
         with open(os.path.join(POLICY_DIR, "code.md")) as f:
             code_policy = f.read()
@@ -108,9 +117,13 @@ async def main():
     async for etype, payload, _ in _run_codegen_loop(
         system, user_msg, out_dir, cfg, client, model,
         codebase_root=cb_root, symbol_index=cb_index,
+        language=lang, update_codebase=args.update,
+        progress_cb=lambda t: print(t, end="", flush=True, file=sys.stderr),
     ):
         if etype == 'summary':
             print(f"\n{payload}", file=sys.stderr)
+        elif etype == 'update':
+            print(f"[Updated codebase: {payload}]", file=sys.stderr)
         else:
             print(f"[Written: {os.path.join(out_dir, payload)}]", file=sys.stderr)
 

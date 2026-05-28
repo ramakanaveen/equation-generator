@@ -172,53 +172,46 @@ cat eq.md | python codegen.py -d ./out/
 
 ### Codebase-aware generation
 
-Pass `--codebase` to point `codegen.py` at any existing project. It auto-detects the language, analyzes the codebase, then generates code that integrates seamlessly — using the actual base class/interface, package/module, imports, and conventions it discovers.
+Pass `--codebase` to point `codegen.py` at any existing project. It auto-detects the language, analyzes the codebase, then generates code that integrates correctly — using the actual base class/interface, package/module, imports, and conventions it discovers.
 
 Supports **Java, Python, TypeScript, Kotlin, Go** out of the box.
 
 ```bash
 python codegen.py -i eq.md -d ./out/ --codebase /path/to/any/project
+
+# Write generated file directly into the codebase at the correct package/module path
+python codegen.py -i eq.md --codebase /path/to/any/project --update
 ```
 
-The analyzer follows the Claude Code / Cline pattern — no separate LLM exploration phase:
+How it works — static analysis first, generation second:
 
 1. **Language detection** — file extension counts determine the primary language automatically
-2. **Symbol index** — Python regex-scans all source files in ~1s; stays in memory, never pre-dumped into context
-3. **Python orientation (0 API calls)** — fan-in analysis identifies the most-implemented base type candidates; bootstrap files (CLAUDE.md, README, build manifest) are read directly. This acts like a CLAUDE.md briefing — scoped facts, not broad exploration.
-4. **Task-guided generation** — the LLM receives the equation + orientation + live tools. The equation acts as the exploration compass: `query_symbols` once to confirm the base type, `read_file` once to inspect it, then `write_file`. ~4 targeted API calls per file.
+2. **Tree-sitter symbol index** — proper CST parser for Java + Python (regex fallback for other languages). Extracts per-file: full import maps (short name → FQN), abstract method signatures, class hierarchy. Runs in ~1s in Python, 0 API calls.
+3. **Eager context loading (0 API calls)** — fan-in analysis finds the most-implemented base type; reads its full source and a reference implementation in full; merges their import maps. The orientation (~8K tokens) contains everything the LLM needs — no exploration required.
+4. **Generation with real compile check** — LLM receives full base type source + example + import map, writes the file, then calls `compile_check` which runs real `javac` (auto-discovers Maven classpath) or `py_compile`. Errors are fixed and re-checked. Total: ~3 API calls / ~20K tokens.
 5. **Orientation cache** — SHA256 content hash stored in `<codebase>/.codegen-cache/`. Any file change invalidates it; cache hit skips all analysis (0 API calls for Phase 1).
-6. **`--deep` mode** — for complex codebases, `--deep` runs the full 3-explorer LLM analysis.
+6. **`--deep` mode** — for complex codebases, `--deep` runs the full 3-explorer LLM analysis instead.
 
 ```bash
 # Full pipeline — any language
 python eqgen.py | python codegen.py -d ./out/ --codebase /path/to/project
 ```
 
-**Java example** (codebase uses `Computable`, not `AlphaExpression`):
+**Java example:**
 ```
-[Language: java | Symbols: 142 (8 base types, 67 with inheritance) | Explorers: claude-haiku-... | Launching 3 in parallel]
-  [Explorer-1 (Base Types)] query_symbols({"kind":"interface"})
-  [Explorer-2 (Implementations)] query_symbols({"kind":"class","test":false})
-  [Explorer-3 (Build + Conventions)] read_file({"path":"CLAUDE.md"})
-  ...
-[Synthesizer: merging reports]
-[Phase 1: Codebase Analysis] 7 calls · 45,230 in + 8,120 out = 53,350 tokens
+[Language: java | Symbols: 142 (8 base types, 67 with inheritance) | Python orientation built (0 API calls)]
+[Phase 1: Codebase Analysis] 0 calls · orientation built from symbol index
 
 [Phase 2: Generating code]
-[Written: ./out/VolumeWeightedMomentumSignal.java]   ← implements Computable, package com.trading.signals
+  [compile_check: Compiled successfully.]
+[Written: ./out/VolumeWeightedMomentumSignal.java]
 
-[Phase 2: Code Generation] 4 calls · 12,450 in + 3,210 out = 15,660 tokens
+[Phase 2: Code Generation] 3 calls · 18,420 in + 2,890 out = 21,310 tokens
 ```
 
-**Python example**:
+**With `--update`** — writes directly into the codebase:
 ```
-[Language: python | Symbols: 38 (2 base types, 14 with inheritance) | Explorers: claude-haiku-... | Launching 3 in parallel]
-  ...
-[Phase 1: Codebase Analysis] 6 calls · 38,100 in + 7,400 out = 45,500 tokens
-
-[Written: ./out/trading/signals/volume_weighted_momentum.py]   ← class FooSignal(BaseSignal)
-
-[Phase 2: Code Generation] 3 calls · 9,800 in + 2,100 out = 11,900 tokens
+[Updated codebase: src/main/java/com/trading/signals/VolumeWeightedMomentumSignal.java]
 ```
 
 Both scripts stream output to the terminal as Claude generates it, and use the same `config.yaml` and `.env` as the web backend.
